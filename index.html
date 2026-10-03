@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>関門汽船 運転シミュレーター — 唐戸⇄門司港</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Zen+Kaku+Gothic+New:wght@500;700;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<canvas id="gl" tabindex="0" aria-label="関門海峡の3Dビュー"></canvas>
+
+<div id="hud" aria-live="polite">
+  <div id="route" class="panel">
+    <div class="line"><span class="dot"></span><span id="rFrom">唐戸</span><span class="arrow">➜</span><span id="rTo">門司港</span></div>
+    <dl>
+      <dt>桟橋まで</dt><dd class="num" id="dist">— m</dd>
+      <dt>経過時間</dt><dd class="num" id="time">00:00</dd>
+      <dt>接触</dt><dd class="num" id="hits">0 回</dd>
+    </dl>
+  </div>
+  <div id="mapwrap" class="panel"><canvas id="minimap" width="400" height="300" aria-label="ミニマップ"></canvas></div>
+  <button id="menuBtn" aria-label="設定メニュー" aria-expanded="false" aria-controls="tools"><span></span><span></span><span></span></button>
+  <div id="tools" class="panel" hidden>
+    <div class="mttl">設定</div>
+    <button class="tbtn" id="bCam">視点 <span id="vCam">追従</span></button>
+    <button class="tbtn" id="bTod">時刻 <span id="vTod">昼</span></button>
+    <button class="tbtn" id="bSea">波 <span id="vSea">普通</span></button>
+    <button class="tbtn" id="bTide">潮流 <span id="vTide">あり</span></button>
+    <button class="tbtn" id="bSnd">音 <span id="vSnd">オフ</span></button>
+    <button class="tbtn" id="bHorn">汽笛 <span>H</span></button>
+    <button class="tbtn" id="bQ">画質 <span id="vQ">自動</span></button>
+    <div class="vol">
+      <label>全体の音量<input type="range" id="volMaster" min="0" max="100" value="70"></label>
+      <label>エンジン<input type="range" id="volEng" min="0" max="100" value="55"></label>
+      <label>波・水の音<input type="range" id="volEnv" min="0" max="100" value="80"></label>
+    </div>
+    <div class="mhint">C / 1〜5 視点　H 汽笛　Esc 閉じる</div>
+  </div>
+  <div id="gauge" class="panel">
+    <div><span class="spd num" id="spd">0.0</span><span class="unit">kn</span></div>
+    <div class="col">針路<b class="num" id="hdg">090°</b></div>
+    <div class="col">潮流<b class="num" id="cur">—</b></div>
+  </div>
+  <div id="keys">W/S 速力　A/D 舵　Q/E 平行移動　X 停止　C / 1〜5 視点　H 汽笛　ドラッグで見回す</div>
+  <div id="lever" class="panel" aria-label="速力レバー">
+    <div class="ttl">速力</div>
+    <div class="rail"><div class="fill" id="lvFill"></div><div class="knob" id="lvKnob"></div></div>
+    <div id="notches"></div>
+  </div>
+  <div id="helm" class="panel">
+    <div class="ttl"><span>舵</span><span class="num" id="rudVal">0°</span></div>
+    <div id="rud"><div class="mid"></div><div class="knob" id="rudKnob"></div></div>
+    <div id="thr"><button id="thL" aria-label="左へ平行移動">◀ 左へ平行</button><button id="thR" aria-label="右へ平行移動">右へ平行 ▶</button></div>
+  </div>
+  <div id="assist" class="panel" hidden>
+    <div class="ttl">着岸アシスト</div>
+    <dl>
+      <dt>前後のずれ</dt><dd class="num" id="asAlong">—</dd>
+      <dt>桟橋との間隔</dt><dd class="num" id="asGap">—</dd>
+      <dt>寄せる速さ</dt><dd class="num" id="asLat">—</dd>
+      <dt>船速</dt><dd class="num" id="asSog">—</dd>
+      <dt>角度</dt><dd class="num" id="asAng">—</dd>
+    </dl>
+  </div>
+  <div id="pip" hidden><span>右舷ミラー</span></div>
+  <div id="mirrorTag" class="panel" hidden>右舷ミラー（鏡像）— 後方を確認</div>
+  <div id="toast" class="panel"></div>
+</div>
+
+<div class="overlay" id="intro">
+  <div class="card panel">
+    <h1><small>関門海峡 連絡船</small>唐戸 ⇄ 門司港<br>運転シミュレーター</h1>
+    <p>下関・唐戸桟橋から対岸の門司港桟橋まで、約1.3kmの海峡を渡ります。航路を横切る大型船と、刻々と向きを変える潮流に注意して、ゆっくり桟橋に横付けしてください。</p>
+    <div class="ctrls">
+      <kbd>W / S</kbd><div>速力レバー（前進・後進）</div>
+      <kbd>A / D</kbd><div>舵を左右に切る（離すと中央へ戻る）</div>
+      <kbd>Q / E</kbd><div>スラスターで左右へ平行移動（低速時・横付けに）</div>
+      <kbd>X</kbd><div>機関停止</div>
+      <kbd>C / 1〜5</kbd><div>視点：追従・操舵席・右ミラー・客室・俯瞰</div>
+      <kbd>H</kbd><div>汽笛</div>
+    </div>
+    <p>着岸は本物と同じ手順です。桟橋の防舷材にそっと横付けし（船速 1.2kn 未満・桟橋と平行 ±10°・間隔 1m 以内）、船が止まると係留索が取られ、渡し板が掛かって乗客が下船します。速すぎる接舷は「接触」になります。スマホでは左のレバーと右の舵スライダーで操船できます。</p>
+    <button class="cta" id="start">乗船を始めて出航する</button>
+  </div>
+</div>
+
+<div class="overlay" id="result" hidden>
+  <div class="card panel">
+    <div class="rank" id="rank">A</div>
+    <h1><small id="resRoute">唐戸 ➜ 門司港</small>着岸しました</h1>
+    <dl class="res">
+      <dt>所要時間</dt><dd class="num" id="rsTime"></dd>
+      <dt>接触</dt><dd class="num" id="rsHits"></dd>
+      <dt>接舷速度</dt><dd class="num" id="rsSpd"></dd>
+      <dt>係留時の角度</dt><dd class="num" id="rsAng"></dd>
+      <dt>スコア</dt><dd class="num" id="rsScore"></dd>
+      <dt>この航路のベスト</dt><dd class="num" id="rsBest"></dd>
+    </dl>
+    <button class="cta" id="next">折り返し便を出航する</button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="js/core.js"></script>
+<script src="js/world.js"></script>
+<script src="js/ferry.js"></script>
+<script src="js/effects.js"></script>
+<script src="js/game.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
