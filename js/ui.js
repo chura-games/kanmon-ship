@@ -8,9 +8,10 @@ const CAM_MODES=[{k:'chase',label:'追従'},{k:'helm',label:'操舵席'},{k:'mir
 let camMode=0;
 const cam={ yaw:0, pitch:0.22, dist:48, pos:new THREE.Vector3(-60,20,-560), look:new THREE.Vector3() };
 const camK=()=>CAM_MODES[camMode].k;
+function setCabinLight(){ IN.cabLight.intensity=camK()==='cabin'?2.2:IN.night*0.9; }
 function setCam(i){ camMode=i; const k=camK(); $('#vCam').textContent=CAM_MODES[i].label; cam.yaw=0;
   if(k==='chase'){cam.pitch=0.22;cam.dist=48;} if(k==='high'){cam.pitch=0.95;cam.dist=320;} if(k==='helm'){cam.pitch=-0.06;} if(k==='cabin'){cam.yaw=-0.55; cam.pitch=-0.05;} if(k==='mirror'){cam.pitch=0;}
-  const ud=ferry.userData; ud.whm.visible=ud.wbm.visible=(k!=='helm'); IN.helm.visible=(k==='helm'); IN.cabLight.visible=(k==='cabin');
+  setCabinLight();
   $('#pip').hidden=(k!=='helm'); $('#mirrorTag').hidden=(k!=='mirror');
   IN.mirrorMat.map=(k==='helm'||k==='mirror')?IN.mirrorRT.texture:null; IN.mirrorMat.color.set((k==='helm'||k==='mirror')?0xffffff:0x223038); IN.mirrorMat.needsUpdate=true; }
 const _lp=new THREE.Vector3();
@@ -25,7 +26,7 @@ function updateCamera(dt,t){
   const shake=game.shake; game.shake=Math.max(0,game.shake-dt*1.5);
   const sh=new THREE.Vector3((rnd()-.5)*shake,(rnd()-.5)*shake,(rnd()-.5)*shake);
   const k=camK();
-  if(k==='helm'){ interiorView(new THREE.Vector3(1.3,4.72+0.86,0.45),sh); camera.fov=62; camera.updateProjectionMatrix(); return; }
+  if(k==='helm'){ interiorView(new THREE.Vector3(3.92,3.95,0.42),sh); camera.fov=62; camera.updateProjectionMatrix(); return; }
   if(k==='cabin'){ interiorView(new THREE.Vector3(-8.2,HULLF.deckY(sOf(-8))+1.55,0.15),sh); camera.fov=66; camera.updateProjectionMatrix(); return; }
   if(k==='mirror'){ setMirrorCam(); camera.position.copy(IN.mirrorCam.position); camera.quaternion.copy(IN.mirrorCam.quaternion); camera.up.set(0,1,0); camera.fov=40; camera.updateProjectionMatrix(); return; }
   if(camera.fov!==55){ camera.fov=55; camera.updateProjectionMatrix(); }

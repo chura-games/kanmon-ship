@@ -22,7 +22,7 @@ function applyTOD(key){
   hemi.color.copy(lc(p.hemiSky)); hemi.groundColor.copy(lc(p.hemiGround)); hemi.intensity=p.hemiI;
   sun.color.copy(lc(p.sunCol)); sun.intensity=p.dirI;
   renderer.toneMappingExposure=p.exp;
-  M.glass.emissiveIntensity=p.night*0.35; ferry.userData.cabMat.emissiveIntensity=p.night*0.8; if(IN.wallMat) IN.wallMat.emissiveIntensity=0.22+p.night*0.55; ferry.userData.glass.emissiveIntensity=p.night*0.5;
+  M.glass.emissiveIntensity=p.night*0.35; IN.night=p.night; setCabinLight();
   for(const k in PIERS) if(PIERS[k].signMat) PIERS[k].signMat.emissiveIntensity=p.night*0.6;
   SIGNS.forEach(m=>m.material.emissiveIntensity=p.night*0.5);
   glowSprites.forEach(s=>{ s.material.opacity = s.userData.always ? 1 : Math.max(0.0, p.night*1.0); s.visible = p.night>0.05 || s.userData.always; });
@@ -62,7 +62,10 @@ function cargoHit(t){
     }
   }
 }
-let slapCool=0, lastWakeT=0, bobRip=0, prevHb=0;
+let slapCool=0, lastWakeT=0, bobRip=0;
+/* waterline stations (13 along the hull, starboard then port): sea level in the hull's frame, how fast it climbs the side, and the lingering impact */
+const WL={N:13, y:new Float32Array(26).fill(NaN), rise:new Float32Array(26)};
+function wlHalf(lx,side){ const u=clamp(lx/SHIP_L+0.5,0,1)*(WL.N-1), i=Math.min(WL.N-2,Math.floor(u)), o=side>0?0:WL.N; return lerp(U.uWL.value[o+i],U.uWL.value[o+i+1],u-i); }
 function stepShip(dt,t){
   // controls
   if(game.state==='sailing'){
@@ -89,25 +92,39 @@ function stepShip(dt,t){
   S.z += (-s*S.u + c*S.v)*dt;
   fenderCool-=dt; collide(t); cargoHit(t);
   if(dock.hold>0) holdAtBerth(dt,dock.hold);
-  // buoyancy (spring-damper toward the local sea surface)
-  const [bx,bz]=shipPoint(SHIP_L*0.4,0), [sx,sz]=shipPoint(-SHIP_L*0.4,0), [ppx,ppz]=shipPoint(0,-SHIP_B*0.5), [spx,spz]=shipPoint(0,SHIP_B*0.5);
-  const hb=waveH(bx,bz,t), hs=waveH(sx,sz,t), hp=waveH(ppx,ppz,t), hst=waveH(spx,spz,t);
-  const spf=clamp(S.u/VMAX,0,1);
-  const yT=(hb+hs+hp+hst)/4 + spf*0.25;
+  // buoyancy: the hull settles onto the plane that best fits the sea under its whole footprint (wider sections carry more),
+  // so it rides over chop shorter than itself; the same stations give the real waterline and where waves strike the hull
+  const spf=clamp(S.u/VMAX,0,1), sinP=Math.sin(S.pitch), sinR=Math.sin(S.roll), wl=U.uWL.value, slapU=U.uSlap.value;
+  let sw=0, swx=0, swh=0, swxx=0, swxh=0, swzz=0, swzh=0, bowRise=0, sideRise=0;
+  for(let i=0;i<WL.N;i++){ const st=i/(WL.N-1), lx=(st-0.5)*SHIP_L, w=HULLF.deckHalf(st);
+    for(const sd of [1,-1]){ const lz=sd*w*0.9, k=sd>0?i:WL.N+i; const [wx,wz]=shipPoint(lx,lz); const h=waveH(wx,wz,t);
+      sw+=w; swx+=w*lx; swh+=w*h; swxx+=w*lx*lx; swxh+=w*lx*h; swzz+=w*lz*lz; swzh+=w*lz*h;
+      const yl=h-(S.y+lx*sinP-lz*sinR), r=(yl-WL.y[k])/Math.max(dt,1e-3);
+      WL.y[k]=yl; WL.rise[k]=r===r?clamp(r,-6,6):0; wl[k]=HULLF.halfAt(st,yl);
+      const hit=wl[k]>0.05?Math.max(0,WL.rise[k]-0.25)*(1+1.5*spf*st):0;   // water climbing the side, harder toward the bow at speed
+      slapU[k]=Math.max(slapU[k]*Math.exp(-dt*1.6),clamp(hit*0.8,0,1));
+      if(st>=0.7) bowRise=Math.max(bowRise,WL.rise[k]); else sideRise=Math.max(sideRise,hit);
+      // spray and foam thrown off where the wave lands
+      let q=hit*(0.4+hit)*160*dt; q=Math.floor(q)+(rnd()<q%1?1:0);
+      for(let j=0;j<q;j++){ const ex=lx+(rnd()-.5)*SHIP_L/(WL.N-1), ez=sd*(wl[k]+0.05); const [px,pz]=shipPoint(ex,ez);
+        const out=0.8+rnd()*1.6+hit*0.9, up=0.9+rnd()*1.2+hit*1.3;
+        emit(px,h+0.05,pz,c*S.u*0.5+s*sd*out+cur,up,-s*S.u*0.5+c*sd*out,0.5+rnd()*0.8,dropSize(0.5+hit*0.4));
+        if(rnd()<0.5) fleck(px+s*sd*rnd()*0.8,pz+c*sd*rnd()*0.8,4+rnd()*7,0.12+rnd()*0.2); } } }
+  const mx=swx/sw, slope=(swxh-mx*swh)/(swxx-mx*swx), heel=swzh/swzz;
+  const yT=swh/sw-slope*mx + spf*0.25;
   S.vy += ((yT-S.y)*14 - S.vy*4.5)*dt; S.y += S.vy*dt;
-  const pT=Math.atan2(hb-hs,SHIP_L*0.8) + spf*0.04 + (accel>0?accel*0.004:0);
+  const pT=Math.atan(slope) + spf*0.04 + (accel>0?accel*0.004:0);
   S.vp += ((pT-S.pitch)*10 - S.vp*4)*dt; S.pitch += S.vp*dt;
-  const roT=Math.atan2(hp-hst,SHIP_B)*0.8 + S.r*S.u*0.035;
+  const roT=Math.atan(-heel)*0.8 + S.r*S.u*0.035;
   S.vr += ((roT-S.roll)*7 - S.vr*2.4)*dt; S.roll += S.vr*dt;
   ferry.position.set(S.x,S.y,S.z); ferry.rotation.set(S.roll,S.psi,S.pitch);
   // bow spray & slams
-  const bowRel = (hb - prevHb)/Math.max(dt,1e-3) - S.vy; prevHb=hb;
-  const slam = clamp(bowRel*spf*0.6,0,3);
-  slapCool-=dt; if(slam>0.35 && slapCool<=0){ sfx.slap(slam); slapCool=0.28+rnd()*0.2; }
+  const slam = clamp(bowRise*spf*0.6,0,3);
+  slapCool-=dt; if(slapCool<=0){ if(slam>0.35){ sfx.slap(slam); slapCool=0.28+rnd()*0.2; } else if(sideRise>0.7){ sfx.slap(sideRise*0.35); slapCool=0.5+rnd()*0.4; } }
   const rate = (spf*spf*3200 + spf*400 + slam*2600)*dt;
   let n = Math.floor(rate) + (rnd()<rate%1?1:0);
   for(let i=0;i<n;i++){
-    const side = rnd()<.5?1:-1, lx=SHIP_L*(0.05+rnd()*0.3), lz=side*(SHIP_B*0.5+rnd()*1.4*spf);
+    const side = rnd()<.5?1:-1, lx=SHIP_L*(0.05+rnd()*0.3), lz=side*(wlHalf(lx,side)+0.05+rnd()*1.4*spf);
     const [wx,wz]=shipPoint(lx,lz);
     const out=2.5+rnd()*5*spf+slam*2.5, up=1.5+rnd()*4.5*spf+slam*3;
     const vx=c*S.u*0.55 + s*side*out + cur, vz=-s*S.u*0.55 + c*side*out;
@@ -159,8 +176,8 @@ function updateFlecks(dt,t){
   const sp=Math.hypot(S.u,S.v), c=Math.cos(S.psi), s=Math.sin(S.psi);
   let n=(sp*55+Math.abs(S.throttle)*40)*dt; n=Math.floor(n)+(rnd()<n%1?1:0);
   for(let i=0;i<n;i++){ const lx=-SHIP_L*0.5-rnd()*5, lz=(rnd()-0.5)*(2.6+rnd()*2.2); fleck(S.x+c*lx+s*lz,S.z-s*lx+c*lz,22+rnd()*38,0.12+rnd()*0.24); }
-  let m=(sp*45)*dt; m=Math.floor(m)+(rnd()<m%1?1:0);
-  for(let i=0;i<m;i++){ const side=rnd()<.5?1:-1, lx=(rnd()-0.3)*SHIP_L*0.8, lz=side*(SHIP_B*0.52+rnd()*1.2); fleck(S.x+c*lx+s*lz,S.z-s*lx+c*lz,3+rnd()*5,0.1+rnd()*0.16); }
+  let m=(sp*70)*dt; m=Math.floor(m)+(rnd()<m%1?1:0);
+  for(let i=0;i<m;i++){ const side=rnd()<.5?1:-1, lx=(rnd()-0.3)*SHIP_L*0.8, lz=side*(wlHalf(lx,side)+0.1+rnd()*1.2); fleck(S.x+c*lx+s*lz,S.z-s*lx+c*lz,3+rnd()*5,0.1+rnd()*0.16); }
   cargos.forEach(k=>{ if(Math.abs(k.x-camera.position.x)<500 && rnd()<dt*18){ fleck(k.x-k.dir*(k.len/2+rnd()*15),k.z+(rnd()-.5)*k.beam,8+rnd()*8,0.18+rnd()*0.25); } });
   // breaking crests and wall splash near the camera
   const cx=camera.position.x, cz=camera.position.z, tries=Math.floor(10*waveAmp);
@@ -286,9 +303,8 @@ const smMat=new THREE.ShaderMaterial({ uniforms:U, transparent:true, depthWrite:
       vec3 col=base*(uAmbient*0.9+uSunColor*max(uSunDir.y,0.0)*0.45);
       gl_FragColor=vec4(col,clamp(a,0.0,1.0)*0.75); ${TAIL} }` });
 const smPoints=new THREE.Points(smGeo,smMat); smPoints.frustumCulled=false; smPoints.renderOrder=5; scene.add(smPoints);
-// exhaust pipes on the aft roof house
+// smoke leaves from the exhaust pipes on the aft roof house
 const EXH=[new THREE.Vector3(-7.95,4.72+1.25,0.85),new THREE.Vector3(-7.95,4.72+1.25,-0.85)];
-EXH.forEach(p=>{ const pipe=new THREE.Mesh(new THREE.CylinderGeometry(0.11,0.13,0.55,12),new THREE.MeshStandardMaterial({color:lc('#1e1f21'),roughness:.6,metalness:.4})); pipe.position.copy(p).add(new THREE.Vector3(0,-0.22,0)); ferry.add(pipe); });
 let prevThr=0, smokeAcc=0;
 function puff(p,v,size,life,dark){ const i=smk.cur; smk.cur=(smk.cur+1)%SM_N; smk.pos.set([p.x,p.y,p.z],i*3); smk.vel.set([v.x,v.y,v.z],i*3); smk.life[i]=life; smk.max[i]=life; smk.size[i]=size; smk.aD[i]=dark; }
 const _ep=new THREE.Vector3(), _ev=new THREE.Vector3();
@@ -452,10 +468,20 @@ function setupLines(P){
 function ropeEnds(i){ const [c,b]=dock.pairs[i]; return [shipWorld(c,dock.side), ponWorld(dock.P,dock.P.bollards[b])]; }
 function doorPoints(){
   const u=ferry.userData, A=shipWorld(u.door,dock.side), deck=shipWorld(u.deckPt,dock.side), rdoor=shipWorld(u.rdoor,1), inside=shipWorld(u.inside,1);
-  const P=dock.P; const B=new THREE.Vector3(A.x,P.pon.position.y+1.25,P.pz+P.dir*3.3);
+  const P=dock.P, py=P.pon.position.y+1.25; let B;
+  if(u.gangway){ // the foot of the ship's gangway: its length out from the hinge, down on the pontoon deck
+    const drop=clamp(A.y-py,-u.gangLen*0.5,u.gangLen*0.9), reach=Math.sqrt(u.gangLen*u.gangLen-drop*drop)*dock.side;
+    B=new THREE.Vector3(A.x+Math.sin(S.psi)*reach,py,A.z+Math.cos(S.psi)*reach);
+  } else B=new THREE.Vector3(A.x,py,P.pz+P.dir*3.3);
   return {A,B,deck,rdoor,inside};
 }
 function updatePlank(){
+  const u=ferry.userData;
+  if(u.gangway){ // swing the berth-side gangway down from upright until its foot rests on the pontoon; it then rides the relative heave
+    const e=dock.ext, ease=e*e*(3-2*e); let down=0;
+    if(e>0.001){ const {A,B}=doorPoints(); down=Math.asin(clamp((A.y-B.y)/u.gangLen,-0.5,0.9)); }
+    for(const sd of [1,-1]) u.gangway[sd].rotation.set(sd*lerp(-Math.PI/2,down,sd===dock.side?ease:0),0,0);
+    return; }
   if(dock.ext<=0.001){ plank.visible=false; return; }
   const {A,B}=doorPoints(); const d=B.clone().sub(A); const len=d.length(); d.normalize();
   // hinged at the gate: swings down from upright onto the pontoon, then rides the relative heave

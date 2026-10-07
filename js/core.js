@@ -165,6 +165,7 @@ const U = {
   uFogDensity:{value:0.00022}, uNight:{value:0}, uCloudCol:{value:new THREE.Color(1,1,1)},
   uScale:{value:800},
   uShip:{value:new THREE.Vector4(0,0,0,0)}, uShipDim:{value:new THREE.Vector2(26,6.6)},
+  uWL:{value:new Float32Array(26)}, uSlap:{value:new Float32Array(26)},   // ferry waterline: wetted half-width and wave impact at 13 stations, starboard then port
   uRipples:{value:Array.from({length:24},()=>new THREE.Vector4(0,0,-999,0))},
   uFlow:{value:new THREE.Vector2(0,0)}, tNoise:{value:TEX_NOISE}, tFoam:{value:TEX_FOAM}, tSlope:{value:TEX_SLOPE}, tRefl:{value:reflRT.texture}, uReflOn:{value:0}, uRes:{value:new THREE.Vector2(1,1)}
 };
@@ -300,6 +301,15 @@ const waterMat = new THREE.ShaderMaterial({
   uniform sampler2D tSlope; uniform sampler2D tRefl; uniform float uReflOn; uniform vec2 uRes; uniform vec2 uFlow;
   varying vec3 vW; varying vec2 vP; varying float vH; varying float vJ;
   vec3 TM(vec3 c){ return ACESFilmicToneMapping(c); }
+  uniform float uWL[26]; uniform float uSlap[26]; const float SHIPLEN=24.0;   // SHIP_L
+  // distance outside the ferry's actual waterline (negative inside the hull), and the wave impact on the nearest stretch of hull
+  float hullOut(float al, float lat, out float slap){
+    float u=clamp(al/SHIPLEN+0.5,0.0,1.0)*12.0; float hw=0.0; slap=0.0;
+    for(int i=0;i<12;i++){ float fi=float(i); if(u>=fi && u<=fi+1.0){
+      if(lat>0.0){ hw=mix(uWL[i],uWL[i+1],u-fi); slap=mix(uSlap[i],uSlap[i+1],u-fi); } else { hw=mix(uWL[13+i],uWL[14+i],u-fi); slap=mix(uSlap[13+i],uSlap[14+i],u-fi); } } }
+    float g=abs(lat)-hw, ax=max(abs(al)-SHIPLEN*0.5,0.0);
+    return (g>0.0||ax>0.0) ? length(vec2(max(g,0.0),ax)) : g;
+  }
   vec2 ripples(vec2 p, inout float foam){
     vec2 g=vec2(0.0);
     for(int i=0;i<24;i++){
@@ -373,7 +383,7 @@ const waterMat = new THREE.ShaderMaterial({
     vec2 f=vec2(cos(uShip.z),-sin(uShip.z)); vec2 sdv=vec2(sin(uShip.z),cos(uShip.z));
     vec2 rel=vP-uShip.xy;
     float alg=dot(rel,f), lat=dot(rel,sdv);
-    float e=length(vec2(alg/(uShipDim.x*0.5),lat/(uShipDim.y*0.5)));
+    float e=9.0, slapF=0.0; if(length(rel)<40.0) e=1.0+hullOut(alg,lat,slapF)/3.3;   // 1 at the waterline, growing outward
     float sp=clamp(uShip.w/8.0,0.0,1.0);
     vec2 so=rel+uSunDir.xz/max(uSunDir.y,0.25)*2.6;
     float es=length(vec2(dot(so,f)/(uShipDim.x*0.56),dot(so,sdv)/(uShipDim.y*0.66)));
@@ -407,7 +417,7 @@ const waterMat = new THREE.ShaderMaterial({
     float crest=smoothstep(0.78,0.34,vJ-nz*0.3)*smoothstep(0.3,1.15,uAmp)*fade*smoothstep(0.15,0.5,nz+0.25);
     float shore=smoothstep(-32.0,-0.8,ld)*(0.5+0.5*smoothstep(0.15,0.75,nz+0.45*sin(ld*0.55+uTime*1.1)))*(0.6+0.5*uAmp);
     float n2=texture2D(tNoise,vP*0.19+vec2(uTime*0.09,uTime*0.05)).g;
-    float hullF=smoothstep(0.98,1.03,e)*smoothstep(1.14+1.0*sp,1.0,e)*(0.45+0.9*sp*smoothstep(-0.45*uShipDim.x,0.25*uShipDim.x,alg));
+    float hullF=smoothstep(0.98,1.03,e)*smoothstep(1.14+1.0*sp+0.5*slapF,1.0,e)*(0.55+0.9*sp*smoothstep(-0.45*uShipDim.x,0.25*uShipDim.x,alg)+1.4*slapF);
     float behind=-alg-uShipDim.x*0.5;
     hullF+=smoothstep(-1.0,1.5,behind)*(1.0-smoothstep(0.0,10.0+40.0*sp,behind))*smoothstep(uShipDim.y*0.45+behind*0.05,uShipDim.y*0.1,abs(lat))*clamp(abs(uShip.w)/2.5,0.0,1.0)*1.3;
     float n3=texture2D(tNoise,vP*0.55-vec2(uTime*0.13,uTime*0.07)).r;

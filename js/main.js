@@ -20,7 +20,11 @@ function applyQuality(){
   QUALITY.pr = QUALITY.mode==='auto' ? Math.min(QUALITY.pr,L.prMax) : L.prMax;
   renderer.setPixelRatio(QUALITY.pr); resize();
   U.uReflOn.value=L.refl?1:0;
-  const sm=QUALITY.level===2?2048:1024; sun.castShadow=QUALITY.level>0;
+  const sm=QUALITY.level===2?2048:1024;
+  // 軽量 turns shadows off by no longer redrawing the shadow map and leaving it blank — switching the light's castShadow would make every shader recompile
+  const shadows=QUALITY.level>0;
+  if(renderer.shadowMap.autoUpdate!==shadows){ renderer.shadowMap.autoUpdate=shadows;
+    if(!shadows && sun.shadow.map){ const c=renderer.getClearColor(new THREE.Color()), a=renderer.getClearAlpha(); renderer.setRenderTarget(sun.shadow.map); renderer.setClearColor(0xffffff,1); renderer.clear(); renderer.setRenderTarget(null); renderer.setClearColor(c,a); } }
   if(sun.shadow.mapSize.x!==sm){ sun.shadow.mapSize.set(sm,sm); if(sun.shadow.map){ sun.shadow.map.dispose(); sun.shadow.map=null; } }
   $('#vQ').textContent=(QUALITY.mode==='auto'?'自動・':'')+L.name;
 }
@@ -120,5 +124,28 @@ function frame(now){
   adaptQuality(dt);
   requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame);
+/* ============================================================
+   Shader warm-up. The GPU compiles one program per kind of material, which adds up to tens of seconds on
+   integrated graphics. Left to the first frame it freezes the page, so compile here one material at a time,
+   each drawn alone on a few pixels (to the screen and to a render target, which use different programs), showing the progress
+   on the start button. Hidden parts (helm, gangplank, sea life…) are included so they don't stall later.
+   ============================================================ */
+function warmUp(done){
+  const objs=[], state=[], seen=new Set(), rt=new THREE.WebGLRenderTarget(8,8); let i=0;
+  scene.traverse(o=>{ state.push([o,o.visible,o.frustumCulled]); o.frustumCulled=false;
+    if(o.isMesh||o.isPoints||o.isLine||o.isSprite){ o.visible=false; objs.push(o); } else if(!o.isLight) o.visible=true; });
+  renderer.setScissorTest(true); renderer.setViewport(0,0,8,8); renderer.setScissor(0,0,8,8);
+  (function step(){
+    const t0=performance.now();
+    while(i<objs.length && performance.now()-t0<30){ const o=objs[i++];
+      const key=[].concat(o.material).map(m=>m.uuid).join()+(o.isInstancedMesh?'i':'')+(o.castShadow?'c':'')+(o.receiveShadow?'r':'');
+      if(seen.has(key)) continue; seen.add(key);
+      o.visible=true; renderer.render(scene,camera); renderer.setRenderTarget(rt); renderer.render(scene,camera); renderer.setRenderTarget(null); o.visible=false; }
+    if(i<objs.length){ BOOT.progress('3D を準備中… '+Math.round(i/objs.length*100)+'%'); requestAnimationFrame(step); return; }
+    state.forEach(([o,v,fc])=>{ o.visible=v; o.frustumCulled=fc; });
+    renderer.setScissorTest(false); resize(); rt.dispose();
+    BOOT.done(); done();
+  })();
+}
+warmUp(()=>{ last=performance.now(); requestAnimationFrame(frame); });
 
