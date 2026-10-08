@@ -327,7 +327,7 @@ function updateSmoke(dt,t){
 }
 
 function stepWorld(dt,t){
-  updateFlecks(dt,t); updateLife(dt,t); updateSmoke(dt,t); updateRoute(dt,t); updateNature(dt,t);
+  updateFlecks(dt,t); updateLife(dt,t); updateSmoke(dt,t); updateRoute(dt,t); updateNature(dt,t); updateFireworks(dt);
   cargos.forEach(c=>{
     c.x += c.dir*c.spd*dt;
     if(c.x>4200) c.x=-4200; if(c.x<-4200) c.x=4200;

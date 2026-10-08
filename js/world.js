@@ -399,7 +399,8 @@ function buildHarbor(P,style){
   for(let x=X0+20;x<X1;x+=60){ for(let k=0;k<6;k++) put(new THREE.Mesh(new THREE.BoxGeometry(0.5,0.05,0.05),railM),x,-0.12,0.2+k*0.5);
     for(const s of [-0.25,0.25]) put(new THREE.Mesh(new THREE.BoxGeometry(0.05,3.2,0.05),railM),x+s,-0.12,1.7); }
   // benches, planters, bollards
-  for(let x=X0+8;x<X1;x+=16){ if(Math.abs(x-P.gx)<10) continue;
+  P.benches=[];
+  for(let x=X0+8;x<X1;x+=16){ if(Math.abs(x-P.gx)<10) continue; P.benches.push(x);
     put(new THREE.Mesh(new THREE.BoxGeometry(1.8,0.08,0.5),wood),x,5,3.75);
     put(new THREE.Mesh(new THREE.BoxGeometry(1.8,0.45,0.06),wood),x,5.25,4.0);
     for(const s of [-0.7,0.7]) put(new THREE.Mesh(new THREE.BoxGeometry(0.08,0.42,0.45),railM),x+s,5,3.5); }

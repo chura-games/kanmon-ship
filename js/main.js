@@ -45,7 +45,7 @@ const reflCam=new THREE.PerspectiveCamera();
 const clipPlane=new THREE.Plane(new THREE.Vector3(0,1,0),1e6);
 renderer.clippingPlanes=[clipPlane];
 const _cd=new THREE.Vector3();
-function reflHideList(){ const l=[waterInner,waterOuter,spPoints,flPoints,wakeT.mesh,wakeK.mesh,plank]; if(streakMesh) l.push(streakMesh); cargos.forEach(c=>l.push(c.wake.mesh,c.wakeK.mesh)); for(const k in PIERS) l.push(PIERS[k].marker); return l; }
+function reflHideList(){ const l=[FW.mirror,waterInner,waterOuter,spPoints,flPoints,wakeT.mesh,wakeK.mesh,plank]; if(streakMesh) l.push(streakMesh); cargos.forEach(c=>l.push(c.wake.mesh,c.wakeK.mesh)); for(const k in PIERS) l.push(PIERS[k].marker); return l; }
 let REFL_HIDE=null;
 function renderReflection(){
   if(!REFL_HIDE) REFL_HIDE=reflHideList();

@@ -4,51 +4,99 @@
 /* ============================================================
    Camera
    ============================================================ */
-const CAM_MODES=[{k:'chase',label:'追従'},{k:'helm',label:'操舵席'},{k:'mirror',label:'右ミラー'},{k:'cabin',label:'客室'},{k:'high',label:'俯瞰'},{k:'pax',label:'お客様'}];
+const CAM_MODES=[{k:'chase',label:'追従'},{k:'helm',label:'操舵席'},{k:'mirror',label:'右ミラー'},{k:'cabin',label:'客室'},{k:'high',label:'俯瞰'}].concat(STAGE.piers.map(p=>({k:'pax',label:'お客様・'+p.name,pier:p.key})));   // one passenger view per shore
 let camMode=0;
 const cam={ yaw:0, pitch:0.22, dist:48, pos:new THREE.Vector3(-60,20,-560), look:new THREE.Vector3() };
 const camK=()=>CAM_MODES[camMode].k;
 /* cabin view: the passenger can walk (W/A/S/D) on the aft deck, through the door, along the aisle and round the lobby
-   in front of the helm partition. Boxes are [x0,x1,z0,z1] in the ship's frame and overlap where they connect. */
-const WALK={ x:-8.2, z:0.15, eye:1.6, speed:1.5, areas:[[-11.6,-8.9,-2.7,2.7],[-9.0,-8.5,-0.42,0.42],[-8.6,2.1,-0.38,0.38],[2.05,2.7,-2.1,2.1]] };
-const KEYS_HINT={ drive:$('#keys').textContent, walk:'W/A/S/D 歩く　ドラッグで見回す　C / 1〜6 視点　H 汽笛（歩いている間、舵は中央・速力はそのまま）',
-  pax:'W/A/S/D 歩く　F 乗る・降りる（渡し板の近くで）　ドラッグで見回す　C / 1〜6 視点' };
+   in front of the helm partition; up the ladder on the aft cabin wall there is the roof deck (lvl 1). Boxes are [x0,x1,z0,z1]
+   in the ship's frame and overlap where they connect. On the roof they leave out the skylight housing, the rafts, the mast and the chest. */
+const WALK={ x:-8.2, z:0.15, lvl:0, seat:null, eye:1.6, speed:1.5, areas:[[-11.6,-8.9,-2.7,2.7],[-9.0,-8.5,-0.42,0.42],[-8.6,2.1,-0.38,0.38],[2.05,2.7,-2.1,2.1]],
+  roof:[[-8.5,3.0,-2.0,-1.6],[-8.5,-1.45,1.6,2.0],[-6.4,-6.0,-2.0,2.0],[-6.4,-0.3,-0.6,0.6],[-1.6,-0.3,-2.0,1.1],[0.5,3.0,-2.0,2.0]] };
+const ROOF_Y=4.81, LADDER={foot:[-9.35,2.0],top:[-8.3,1.8]};
+/* places to sit in the saloon: eight rows of benches each side of the aisle facing forward, and a bench along each side by the door facing inboard */
+const SEATS=[];
+for(const x0 of [-7.35,-6.09,-4.83,-3.57,-2.31,-1.05,0.22,1.48]) for(const sd of [1,-1]) for(const z of [0.75,1.27,1.8]) SEATS.push({x:x0+0.3,z:sd*z,yaw:0});
+for(const sd of [1,-1]) for(const x of [-8.25,-7.7]) SEATS.push({x,z:sd*2.0,yaw:sd*Math.PI/2});
+const KEYS_HINT={ drive:$('#keys').textContent, walk:'W/A/S/D 歩く　F 座る・立つ・はしご　ドラッグで見回す　C / 1〜7 視点　H 汽笛（歩いている間、舵は中央・速力はそのまま）',
+  pax:'W/A/S/D 歩く　F 乗る・降りる・座る・はしご　ドラッグで見回す　C / 1〜7 視点' };
 const walking=()=>camK()==='cabin'||camK()==='pax';   // views in which the keys walk a person instead of working the ship
 /* passenger view: a customer on foot. Ashore they walk the quay, the gangway and the pontoon of PAX.pier (world coordinates);
-   with the ship's gangway down they can step aboard (F) and then walk the ship like the cabin view, and step off again at the other side. */
-const PAX={ onShip:false, pier:null, x:0, y:3.5, z:0 };
+   with the ship's gangway down they can walk across it (or press F beside it) and then walk the ship like the cabin view, and go ashore again at the other side. */
+const PAX={ onShip:false, pier:null, x:0, y:3.5, z:0, seat:null, armed:true };
 function paxGround(x,z){ const P=PAX.pier, deck=P.pon.position.y+1.25, a=(z-P.shore)*P.dir;   // a: metres out from the quay edge
   if(Math.abs(x-P.x)<16.6 && Math.abs(z-P.pz)<3.6) return deck;
   if(Math.abs(x-P.gx)<1.5 && a>-3 && a<P.glen+0.6) return lerp(3.5,deck+0.15,clamp(a/P.glen,0,1));
   const d=((P.dir>0?northZ(x):southZ(x))-z)*P.dir;                                              // d: metres inland
   return (Math.abs(x-P.x)<70 && d>0.6 && d<14) ? Math.max(3.2,terrainH(x,z))+0.2 : null; }
 function enterPax(){ if(PAX.onShip) return;
-  let P=null, pd=1e9; for(const key in PIERS){ const q=PIERS[key], d=Math.hypot(S.x-q.bx,S.z-q.bz); if(d<pd){ pd=d; P=q; } }   // wait at the pier the ship is nearer
-  if(P!==PAX.pier){ PAX.pier=P; PAX.x=P.gx+7; PAX.z=shoreZ(P,PAX.x,6); PAX.y=paxGround(PAX.x,PAX.z)||3.5; }
+  const P=PIERS[CAM_MODES[camMode].pier];
+  if(P!==PAX.pier){ PAX.pier=P; PAX.seat=null; PAX.armed=true; PAX.x=P.gx+7; PAX.z=shoreZ(P,PAX.x,6); PAX.y=paxGround(PAX.x,PAX.z)||3.5; }
   cam.yaw=Math.atan2(-(S.z-PAX.z),S.x-PAX.x); }
+const gangDown=()=>dock.ext>0.95 && !!dock.P;
 function walkShore(dt){
+  if(PAX.seat) return;
   const f=(input.up?1:0)-(input.down?1:0), r=(input.right?1:0)-(input.left?1:0);
   if(f||r){ const cy=Math.cos(cam.yaw), sy=Math.sin(cam.yaw), st=WALK.speed*dt/Math.hypot(f,r), nx=PAX.x+(cy*f+sy*r)*st, nz=PAX.z+(-sy*f+cy*r)*st;
     if(paxGround(nx,nz)!==null){ PAX.x=nx; PAX.z=nz; } else if(paxGround(nx,PAX.z)!==null) PAX.x=nx; else if(paxGround(PAX.x,nz)!==null) PAX.z=nz; }
-  const g=paxGround(PAX.x,PAX.z); if(g!==null) PAX.y+=(g-PAX.y)*Math.min(1,dt*10); }
-/* F: step across the ship's gangway — aboard from the pontoon, or ashore from the aft deck */
-function paxCross(){
-  if(camK()!=='pax') return;
-  const down=dock.ext>0.95 && dock.P, u=ferry.userData, gate=[u.door.x,dock.side*2.3];
-  if(down && !PAX.onShip && dock.P===PAX.pier && Math.hypot(PAX.x-doorPoints().B.x,PAX.z-doorPoints().B.z)<3){ PAX.onShip=true; WALK.x=gate[0]; WALK.z=gate[1]; cam.yaw-=S.psi; toast('乗船しました','ok'); }
-  else if(down && PAX.onShip && Math.hypot(WALK.x-gate[0],WALK.z-gate[1])<2){ const B=doorPoints().B; PAX.onShip=false; PAX.pier=dock.P; PAX.x=B.x; PAX.z=B.z; PAX.y=B.y; cam.yaw+=S.psi; toast(PAX.pier.name+'で下船しました','ok'); }
-  else return toast(down?'船の渡し板のそばで押してください':'渡し板が掛かっているときに乗り降りできます');
-  viewGlass(); }
+  const g=paxGround(PAX.x,PAX.z); if(g!==null) PAX.y+=(g-PAX.y)*Math.min(1,dt*10);
+  // walking onto the foot of the ship's gangway takes them aboard (after stepping ashore they must first move away from it)
+  if(gangDown() && dock.P===PAX.pier){ const B=doorPoints().B, d=Math.hypot(PAX.x-B.x,PAX.z-B.z); if(d>1.9) PAX.armed=true; else if(d<0.8 && PAX.armed && (f||r)) boardShip(); } }
+/* A short walk the camera is led along: across the gangway, or up and down the ladder. pts() gives the way-points in world
+   coordinates, afresh each frame because the ship moves. While it lasts cam.yaw is a world bearing. */
+const TRANS={ on:false, t:0, dur:1, pts:null, done:null };
+function startTrans(dur,pts,done){ TRANS.on=true; TRANS.t=0; TRANS.dur=dur; TRANS.pts=pts; TRANS.done=done; }
+function endTrans(){ if(TRANS.on){ TRANS.on=false; TRANS.done(); } }
+const shipPt=(x,y,z)=>ferry.localToWorld(new THREE.Vector3(x,y,z)), eyeUp=v=>v.clone().setY(v.y+WALK.eye);
+const gatePt=()=>[ferry.userData.door.x,dock.side*2.0];
+function boardShip(){
+  const g=gatePt(), from=new THREE.Vector3(PAX.x,PAX.y+WALK.eye,PAX.z); PAX.seat=null;
+  startTrans(2.6,()=>{ const {A,B}=doorPoints(); return [from,eyeUp(B),eyeUp(A),shipPt(g[0],HULLF.deckY(sOf(g[0]))+WALK.eye,g[1])]; },
+    ()=>{ PAX.onShip=true; WALK.lvl=0; WALK.seat=null; WALK.x=g[0]; WALK.z=g[1]; cam.yaw-=S.psi; viewGlass(); toast('乗船しました','ok'); }); }
+function leaveShip(){
+  const from=[WALK.x,HULLF.deckY(sOf(WALK.x))+WALK.eye,WALK.z]; cam.yaw+=S.psi;
+  startTrans(2.6,()=>{ const {A,B}=doorPoints(); return [shipPt(...from),eyeUp(A),eyeUp(B)]; },
+    ()=>{ const B=doorPoints().B; PAX.onShip=false; PAX.pier=dock.P; PAX.seat=null; PAX.armed=false; PAX.x=B.x; PAX.z=B.z; PAX.y=B.y; viewGlass(); toast(PAX.pier.name+'で下船しました','ok'); }); }
+function climb(up){
+  const f=LADDER.foot, tp=LADDER.top, y0=HULLF.deckY(sOf(f[0]))+WALK.eye, y1=ROOF_Y+WALK.eye;
+  const way=[[f[0],y0,f[1]],[f[0],y1,f[1]],[tp[0],y1,tp[1]]]; if(!up) way.reverse();
+  way.unshift([WALK.x,up?y0:y1,WALK.z]); cam.yaw+=S.psi;
+  startTrans(up?3.4:3.0,()=>way.map(p=>shipPt(...p)),()=>{ WALK.lvl=up?1:0; [WALK.x,WALK.z]=up?tp:f; cam.yaw-=S.psi; toast(up?'二階（屋上デッキ）に上がりました':'一階に下りました','ok'); }); }
+/* What F (or the on-screen button) would do just now for the person on foot: [label, action], or null */
+function walkAction(){
+  const k=camK(); if(!walking()||TRANS.on) return null;
+  if(k==='cabin'||PAX.onShip){
+    if(WALK.seat) return ['立つ',()=>{ WALK.seat=null; }];
+    const near=(p,r)=>Math.hypot(WALK.x-p[0],WALK.z-p[1])<r;
+    if(WALK.lvl===1) return near(LADDER.top,1.0)?['一階へ下りる',()=>climb(0)]:null;
+    if(near(LADDER.foot,0.9)) return ['二階へ上る',()=>climb(1)];
+    if(k==='pax' && gangDown() && near([ferry.userData.door.x,dock.side*2.3],1.6)) return ['船を降りる',leaveShip];
+    const ax=WALK.x+Math.cos(cam.yaw)*0.7, az=WALK.z-Math.sin(cam.yaw)*0.7; let best=null, bd=1e9;   // the seat they are facing
+    for(const s of SEATS){ if(Math.hypot(s.x-WALK.x,s.z-WALK.z)>2.1) continue; const d=Math.hypot(s.x-ax,s.z-az); if(d<bd){ bd=d; best=s; } }
+    return best?['座る',()=>{ WALK.seat=best; cam.yaw=best.yaw; cam.pitch=-0.05; }]:null; }
+  if(PAX.seat) return ['立つ',()=>{ PAX.seat=null; }];
+  const P=PAX.pier;
+  if(gangDown() && dock.P===P){ const B=doorPoints().B; if(Math.hypot(PAX.x-B.x,PAX.z-B.z)<3) return ['船に乗る',boardShip]; }
+  for(const bx of P.benches||[]){ const bz=shoreZ(P,bx,4.9); if(Math.hypot(PAX.x-bx,PAX.z-bz)<2)
+    return ['ベンチに座る',()=>{ PAX.seat={x:bx,y:3.8+0.72,z:bz}; cam.yaw=-P.dir*Math.PI/2; cam.pitch=0; }]; }
+  return null; }
+function doWalkAction(){ if(!walking()) return; const a=walkAction(); if(a) return a[1]();
+  if(camK()==='pax' && !PAX.onShip && !TRANS.on) toast(gangDown()&&dock.P===PAX.pier?'船の渡し板まで歩くと乗れます':'船の渡し板が掛かると乗れます'); }
+let actLabel=null;
+function actPrompt(){ const a=walkAction(), l=a?a[0]:''; if(l===actLabel) return; actLabel=l; const b=$('#actBtn'); b.hidden=!l; if(l) b.textContent=l+'（F）'; }
 function viewGlass(){ const k=camK(), inside=k==='helm'||k==='cabin'||(k==='pax'&&PAX.onShip); ferry.userData.glassMats.forEach((o,m)=>{ m.opacity=inside?o*0.14:o; }); }
 function walkCabin(dt){
+  if(WALK.seat) return;
   const f=(input.up?1:0)-(input.down?1:0), r=(input.right?1:0)-(input.left?1:0); if(!f && !r) return;
-  const cy=Math.cos(cam.yaw), sy=Math.sin(cam.yaw), l=Math.hypot(f,r), st=WALK.speed*dt/l;
-  const ok=(x,z)=>WALK.areas.some(([x0,x1,z0,z1])=>x>=x0&&x<=x1&&z>=z0&&z<=z1);
+  const cy=Math.cos(cam.yaw), sy=Math.sin(cam.yaw), l=Math.hypot(f,r), st=WALK.speed*dt/l, areas=WALK.lvl?WALK.roof:WALK.areas;
+  const ok=(x,z)=>areas.some(([x0,x1,z0,z1])=>x>=x0&&x<=x1&&z>=z0&&z<=z1);
   const nx=WALK.x+(cy*f+sy*r)*st, nz=WALK.z+(-sy*f+cy*r)*st;
   if(ok(nx,nz)){ WALK.x=nx; WALK.z=nz; } else if(ok(nx,WALK.z)) WALK.x=nx; else if(ok(WALK.x,nz)) WALK.z=nz;   // slide along walls
+  // a passenger who walks out through the gate onto the lowered gangway goes ashore
+  if(camK()==='pax' && !WALK.lvl && gangDown() && Math.abs(WALK.x-ferry.userData.door.x)<0.6 && WALK.z*dock.side>2.45) leaveShip();
 }
 function setCabinLight(){ IN.cabLight.intensity=camK()==='cabin'?2.2:IN.night*0.9; }
-function setCam(i){ camMode=i; const k=camK(); $('#vCam').textContent=CAM_MODES[i].label; cam.yaw=0;
+function setCam(i){ endTrans(); camMode=i; const k=camK(); $('#vCam').textContent=CAM_MODES[i].label; cam.yaw=0;
   if(k==='chase'){cam.pitch=0.22;cam.dist=48;} if(k==='high'){cam.pitch=0.95;cam.dist=320;} if(k==='helm'){cam.pitch=-0.06;} if(k==='cabin'){cam.yaw=0; cam.pitch=-0.05;} if(k==='mirror'){cam.pitch=0;} if(k==='pax'){ cam.pitch=0; enterPax(); }
   viewGlass();
   setCabinLight(); $('#keys').textContent=k==='cabin'?KEYS_HINT.walk:k==='pax'?KEYS_HINT.pax:KEYS_HINT.drive;
@@ -65,11 +113,20 @@ function interiorView(eye,sh){
 function updateCamera(dt,t){
   const shake=game.shake; game.shake=Math.max(0,game.shake-dt*1.5);
   const sh=new THREE.Vector3((rnd()-.5)*shake,(rnd()-.5)*shake,(rnd()-.5)*shake);
-  const k=camK();
+  const k=camK(); actPrompt();
   if(k==='helm'){ interiorView(new THREE.Vector3(3.92,3.95,0.42),sh); camera.fov=62; camera.updateProjectionMatrix(); return; }
-  if(k==='cabin'||(k==='pax'&&PAX.onShip)){ walkCabin(dt); interiorView(new THREE.Vector3(WALK.x,HULLF.deckY(sOf(WALK.x))+WALK.eye,WALK.z),sh); camera.fov=66; camera.updateProjectionMatrix(); return; }
-  if(k==='pax' && !PAX.onShip){ walkShore(dt);
-    camera.position.set(PAX.x,PAX.y+WALK.eye,PAX.z); camera.up.set(0,1,0);
+  if(TRANS.on){ // led along a path: ease along the way-points, with a little bob for each step
+    TRANS.t+=dt/TRANS.dur; if(TRANS.t>=1) endTrans();
+    else { const pts=TRANS.pts(), e=TRANS.t*TRANS.t*(3-2*TRANS.t), ls=[]; let tot=0; for(let i=1;i<pts.length;i++){ ls.push(pts[i].distanceTo(pts[i-1])); tot+=ls[i-1]; }
+      let d=e*tot, i=0; while(i<ls.length-1 && d>ls[i]) d-=ls[i++];
+      camera.position.copy(pts[i]).lerp(pts[i+1],ls[i]>0?d/ls[i]:0); camera.position.y+=Math.abs(Math.sin(e*tot*2.6))*0.05; camera.up.set(0,1,0);
+      _lp.set(Math.cos(cam.yaw)*Math.cos(cam.pitch),Math.sin(cam.pitch),-Math.sin(cam.yaw)*Math.cos(cam.pitch)).add(camera.position); camera.lookAt(_lp);
+      camera.fov=66; camera.updateProjectionMatrix(); return; } }
+  if(k==='cabin'||(k==='pax'&&PAX.onShip)){ walkCabin(dt); if(TRANS.on) return; const st=WALK.seat;
+    interiorView(st?new THREE.Vector3(st.x,HULLF.deckY(sOf(st.x))+1.27,st.z):new THREE.Vector3(WALK.x,WALK.lvl?ROOF_Y+WALK.eye:HULLF.deckY(sOf(WALK.x))+WALK.eye,WALK.z),sh);
+    camera.fov=66; camera.updateProjectionMatrix(); return; }
+  if(k==='pax' && !PAX.onShip){ walkShore(dt); if(TRANS.on) return;
+    if(PAX.seat) camera.position.set(PAX.seat.x,PAX.seat.y,PAX.seat.z); else camera.position.set(PAX.x,PAX.y+WALK.eye,PAX.z); camera.up.set(0,1,0);
     _lp.set(Math.cos(cam.yaw)*Math.cos(cam.pitch),Math.sin(cam.pitch),-Math.sin(cam.yaw)*Math.cos(cam.pitch)).add(camera.position); camera.lookAt(_lp);
     camera.fov=66; camera.updateProjectionMatrix(); return; }
   if(k==='mirror'){ setMirrorCam(); camera.position.copy(IN.mirrorCam.position); camera.quaternion.copy(IN.mirrorCam.quaternion); camera.up.set(0,1,0); camera.fov=40; camera.updateProjectionMatrix(); return; }
@@ -151,7 +208,7 @@ window.addEventListener('keydown',e=>{ if(e.code==='Escape') setMenu(false); });
   bind('#volMaster',()=>MASTERVOL,v=>MASTERVOL=v); bind('#volEng',()=>ENGVOL,v=>ENGVOL=v); bind('#volEnv',()=>ENVVOL,v=>ENVVOL=v); })();
 $('#bQ').onclick=()=>{ const order=['auto',0,1,2]; const cur=QUALITY.mode==='auto'?'auto':QUALITY.level; const nx=order[(order.indexOf(cur)+1)%4]; if(nx==='auto'){ QUALITY.mode='auto'; } else { QUALITY.mode='fixed'; QUALITY.level=nx; } applyQuality(); };
 $('#bHorn').onclick=()=>{ sfx.init(); sfx.horn(); };
-$('#gangBtn').onclick=workGangway;
+$('#gangBtn').onclick=workGangway; $('#actBtn').onclick=doWalkAction;
 $('#bAuto').onclick=()=>setAuto(!AUTO.on);
 const KEYMAP={KeyW:'up',ArrowUp:'up',KeyS:'down',ArrowDown:'down',KeyA:'left',ArrowLeft:'left',KeyD:'right',ArrowRight:'right',KeyQ:'q',KeyE:'e'};
 window.addEventListener('keydown',e=>{
@@ -160,9 +217,9 @@ window.addEventListener('keydown',e=>{
   if(KEYMAP[e.code]){ input[KEYMAP[e.code]]=true; e.preventDefault(); }
   if(e.code==='KeyX' && game.state==='sailing') S.throttle=0;
   if(e.code==='KeyP' && !e.repeat) setAuto(!AUTO.on);
-  if(e.code==='KeyF' && !e.repeat) paxCross();
+  if(e.code==='KeyF' && !e.repeat) doWalkAction();
   if(e.code==='KeyC' && !e.repeat) setCam((camMode+1)%CAM_MODES.length);
-  if(/^Digit[1-6]$/.test(e.code)) setCam(+e.code.slice(5)-1);
+  if(/^Digit[1-7]$/.test(e.code)){ const i=+e.code.slice(5)-1; if(i<CAM_MODES.length) setCam(i); }
   if(e.code==='KeyH' && !e.repeat){ sfx.init(); sfx.horn(); }
   if(e.code==='KeyG' && !e.repeat) workGangway();
   if(e.code==='Enter' && !$('#intro').hidden) $('#start').click();
@@ -281,6 +338,10 @@ const sfx=(()=>{
       g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(pk,t+0.02); g.gain.setValueAtTime(pk,t+dur*0.65); g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
       o.connect(b1); o.connect(b2); b1.connect(g); b2.connect(g); g.connect(master); o.start(t); lfo.start(t); o.stop(t+dur+0.05); lfo.stop(t+dur+0.05); },
     fender(v){ if(!ac||!on) return; const t=ac.currentTime, o=ac.createOscillator(); o.type='triangle'; o.frequency.setValueAtTime(95,t); o.frequency.exponentialRampToValueAtTime(55,t+0.5); const g=ac.createGain(); g.gain.setValueAtTime(Math.max(0.002,clamp(0.08+v*0.35,0.05,0.5)*ENVVOL),t); g.gain.exponentialRampToValueAtTime(0.001,t+0.6); o.connect(g); g.connect(master); o.start(t); o.stop(t+0.65); },
+    /* a firework bursting some way off: heard `delay` seconds after it is seen */
+    boom(v,delay){ if(!ac||!on) return; const t=ac.currentTime+delay, src=ac.createBufferSource(); src.buffer=wnBuf; const f=ac.createBiquadFilter(); f.type='lowpass'; f.frequency.value=160+v*500; const g=ac.createGain(), pk=Math.max(0.002,v*0.9*ENVVOL);
+      g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(pk,t+0.015); g.gain.exponentialRampToValueAtTime(0.0001,t+1.3); src.connect(f); f.connect(g); g.connect(master); src.start(t,Math.random()*1.5); src.stop(t+1.4);
+      const o=ac.createOscillator(), og=ac.createGain(); o.type='sine'; o.frequency.setValueAtTime(85,t); o.frequency.exponentialRampToValueAtTime(34,t+0.45); og.gain.setValueAtTime(0.0001,t); og.gain.exponentialRampToValueAtTime(pk,t+0.01); og.gain.exponentialRampToValueAtTime(0.0001,t+0.6); o.connect(og); og.connect(master); o.start(t); o.stop(t+0.65); },
     thud(s){ if(!ac||!on) return; const t=ac.currentTime, src=ac.createBufferSource(); src.buffer=noiseBuf(); const f=ac.createBiquadFilter(); f.type='lowpass'; f.frequency.value=180; const g=ac.createGain();
       g.gain.setValueAtTime(clamp(s*0.15,0.1,0.8),t); g.gain.exponentialRampToValueAtTime(0.001,t+0.7); src.connect(f); f.connect(g); g.connect(master); src.start(t); src.stop(t+0.8); }
   };

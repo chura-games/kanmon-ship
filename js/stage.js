@@ -20,7 +20,7 @@ const STAGES = {
     city:{ max:1500, core:[-300,350], height:1 },
     cargos:[ {len:130,beam:21,hex:'#1d2b3a',z:-150,dir:1,spd:6.2,x:-2600}, {len:150,beam:24,hex:'#2e3b2f',z:110,dir:-1,spd:5.4,x:1800}, {len:95,beam:16,hex:'#4a3a2a',z:-40,dir:1,spd:4.6,x:-600} ],
     buoys:[[-600,-240,'red'],[500,-230,'red'],[1400,-260,'red'],[-500,260,'green'],[700,250,'green'],[1500,230,'green']],
-    map:[-1500,2700], whirls:[], gates:[], sights:[],
+    map:[-1500,2700], whirls:[], gates:[], sights:[], fireworks:true,
   },
   naruto: {
     id:'naruto', name:'鳴門海峡', title:'関門汽船 運転シミュレーター — 鳴門海峡編',

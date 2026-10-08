@@ -1,7 +1,7 @@
 /* 関門汽船 運転シミュレーター — 起動：コースを選んでもらい、3Dモデル models/*.glb（Blender で編集できる）とゲーム本体を読み込む */
 'use strict';
 const MODEL_FILES = { ferry:'models/ferry.glb' };
-const GAME_SCRIPTS = ['js/stage.js','js/core.js','js/world.js','js/ferry.js','js/effects.js','js/game.js','js/route.js','js/nature.js','js/auto.js','js/ui.js','js/main.js'];
+const GAME_SCRIPTS = ['js/stage.js','js/core.js','js/world.js','js/ferry.js','js/effects.js','js/game.js','js/route.js','js/nature.js','js/fireworks.js','js/auto.js','js/ui.js','js/main.js'];
 const MODELS = {
   loaded:{},
   /* モデルを新しいグループに入れて返す。部品は find / mesh で名前から探す */

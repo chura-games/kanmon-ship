@@ -116,7 +116,8 @@ canvas#gl{position:fixed;inset:0;width:100%;height:100%;display:block;outline:no
 #pip span{position:absolute;left:8px;bottom:6px;font-size:11px;font-weight:700;color:#fff;text-shadow:0 1px 3px #000}
 #mirrorTag{position:absolute;left:50%;top:12px;transform:translateX(-50%);padding:6px 14px;font-size:12px;font-weight:700}
 #gangBtn{position:absolute;left:50%;top:32%;transform:translateX(-50%);padding:12px 22px;font:inherit;font-weight:900;font-size:16px;color:#fff;background:var(--pier);border:0;cursor:pointer;pointer-events:auto;white-space:nowrap}
-#gangBtn:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+#actBtn{position:absolute;left:50%;bottom:24%;transform:translateX(-50%);padding:10px 20px;font:inherit;font-weight:900;font-size:15px;color:#fff;background:var(--pier);border:0;cursor:pointer;pointer-events:auto;white-space:nowrap}
+#actBtn:focus-visible,#gangBtn:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
 #toast{position:absolute;left:50%;top:22%;transform:translateX(-50%);padding:10px 18px;font-weight:700;font-size:15px;opacity:0;transition:opacity .25s;white-space:nowrap}
 #toast.show{opacity:1}
 #toast.warn{color:var(--warn)}
