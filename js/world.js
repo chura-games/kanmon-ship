@@ -9,8 +9,9 @@
   const geo = new THREE.PlaneGeometry(W,D,SX,SZ).rotateX(-Math.PI/2);
   geo.translate(300,0,0);
   const pos = geo.attributes.position, col = new Float32Array(pos.count*3);
-  const cSea=lc('#5b5a4c'), cQuay=lc('#8d8f90'), cCity=lc('#7d7f7a'), cCity2=lc('#8f8a80'), cPlaza=lc('#a39383'),
-        cG1=lc('#3a5630'), cG2=lc('#58733f'), cRock=lc('#4b5840');
+  const L=Object.assign({quay:'#8d8f90',city:'#7d7f7a',city2:'#8f8a80',plaza:'#a39383',g1:'#3a5630',g2:'#58733f',rock:'#4b5840'},STAGE.land);
+  const cSea=lc('#5b5a4c'), cQuay=lc(L.quay), cCity=lc(L.city), cCity2=lc(L.city2), cPlaza=lc(L.plaza),
+        cG1=lc(L.g1), cG2=lc(L.g2), cRock=lc(L.rock);
   const tmp=new THREE.Color();
   for(let i=0;i<pos.count;i++){
     const x=pos.getX(i), z=pos.getZ(i), h=terrainH(x,z), d=landD(x,z);
@@ -20,7 +21,7 @@
     else {
       tmp.copy(cCity).lerp(cCity2,n);
       if(d<40) tmp.lerp(cQuay,0.6);
-      const nearPier = Math.min(Math.hypot(x+150,z-northZ(-150)+40), Math.hypot(x-250,z-southZ(250)-40));
+      const nearPier = Math.min(...STAGE.piers.map(p=>Math.hypot(x-p.x,z-(p.north?northZ(p.x)-40:southZ(p.x)+40))));
       if(nearPier<110) tmp.lerp(cPlaza,0.7*smooth(110,50,nearPier));
       const green = smooth(10,26,h) * (0.6+0.4*smooth(0.35,0.6,n));
       const g = cG1.clone().lerp(cG2,fbm2(x*.013,z*.013)); if(h>160) g.lerp(cRock,0.4);
@@ -32,11 +33,12 @@
   geo.computeVertexNormals();
   const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({vertexColors:true, roughness:1, metalness:0}));
   scene.add(m);
-  // sea walls
+  // sea walls: along both shores, or on natural shores (STAGE.wild) only the stretch of quay around each pier
   const pts=[], idx=[]; let v=0;
-  for(const side of [northZ,southZ]){
+  const runs=STAGE.wild ? STAGE.piers.map(p=>[p.north?northZ:southZ,p.x-300,p.x+300]) : [[northZ,-4200,4800],[southZ,-4200,4800]];
+  for(const [side,xa,xb] of runs){
     const start=v;
-    for(let x=-4200;x<=4800;x+=12){ const z=side(x); pts.push(x,3.35,z, x,-5,z); v+=2; }
+    for(let x=xa;x<=xb;x+=12){ const z=side(x); pts.push(x,3.35,z, x,-5,z); v+=2; }
     for(let i=start;i<v-2;i+=2) idx.push(i,i+1,i+2, i+1,i+3,i+2);
   }
   const wg=new THREE.BufferGeometry(); wg.setAttribute('position',new THREE.Float32BufferAttribute(pts,3)); wg.setIndex(idx); wg.computeVertexNormals();
@@ -47,8 +49,7 @@
    City buildings (instanced; procedural windows lit at night)
    ============================================================ */
 const PIERS = {};
-PIERS.karato = { name:'唐戸', x:-150, shore:northZ(-150), dir:1 };
-PIERS.moji   = { name:'門司港', x:250, shore:southZ(250), dir:-1 };
+for(const d of STAGE.piers) PIERS[d.key] = { name:d.name, x:d.x, shore:(d.north?northZ:southZ)(d.x), dir:d.north?1:-1, style:d.style, sign:d.sign, office:d.office };
 for(const k in PIERS){ const p=PIERS[k]; p.pz = p.shore + p.dir*48; p.bz = p.pz + p.dir*(4.45+SHIP_B/2+0.15); p.bx = p.x; p.psi = 0; }
 
 const buildMat = new THREE.ShaderMaterial({
@@ -86,7 +87,8 @@ const buildMat = new THREE.ShaderMaterial({
   const palette=['#e9e6df','#d9d6cf','#c9ccd0','#b8bec6','#e3dccd','#a7b0b9','#d7d0c4','#f1efe9','#9ea6ad','#c4b8a6'].map(lc);
   const brick=['#8d4b36','#9a5a42','#7e4432'].map(lc);
   const add=(x,z,w,d,h,rot,c)=>list.push({x,z,w,d,h,rot,c});
-  for(let i=0;i<2600 && list.length<1500;i++){
+  const kanmon=STAGE.id==='kanmon', C=STAGE.city;
+  for(let i=0;i<2600 && list.length<C.max;i++){
     const north = rnd()<0.55;
     const x = -3600 + rnd()*7600;
     const d = 22 + Math.pow(rnd(),1.6)*480;
@@ -94,22 +96,25 @@ const buildMat = new THREE.ShaderMaterial({
     const g = terrainH(x,z); if(g>40) continue;
     let near=false; for(const k in PIERS){ const p=PIERS[k]; if(Math.abs(x-p.x)<70 && d<95) near=true; if(Math.abs(x-p.x)<260 && d<34) near=true; if(Math.abs(x-p.x)<330 && Math.abs(x-p.x)>160 && d<70 && rnd()<0.6) near=true; }
     if(Math.abs(x-BRIDGE_X)<40) near=true;
-    if(!north && x>-440 && x<-100 && d<120) near=true; if(north && x>-120 && x<-40 && d<30) near=true; if(!north && x>60 && x<230 && d<55) near=true;
+    if(kanmon){ if(!north && x>-440 && x<-100 && d<120) near=true; if(north && x>-120 && x<-40 && d<30) near=true; if(!north && x>60 && x<230 && d<55) near=true; }
     if(near) continue;
     const slope = north ? (northZ(x+5)-northZ(x-5))/10 : (southZ(x+5)-southZ(x-5))/10;
     const rot = -Math.atan(slope) + (rnd()<0.25 ? (rnd()-.5)*0.8 : 0);
-    const core = Math.exp(-((x-(north?-300:350))**2)/(2*700*700));
-    const h = 7 + Math.pow(rnd(),2.6)*(22+40*core) + (d<120?rnd()*8:0);
+    const core = Math.exp(-((x-(north?C.core[0]:C.core[1]))**2)/(2*700*700));
+    if(!kanmon && rnd()>0.25+0.75*core) continue;   // outside Kanmon the towns huddle around the two ports
+    const h = 7 + (Math.pow(rnd(),2.6)*(22+40*core) + (d<120?rnd()*8:0))*C.height;
     const w = 9+rnd()*22, dd=9+rnd()*20;
-    const retro = !north && x>80 && x<700 && d<260 && rnd()<0.45;
+    const retro = kanmon && !north && x>80 && x<700 && d<260 && rnd()<0.45;
     const c = retro ? brick[(rnd()*3)|0] : palette[(rnd()*palette.length)|0];
     add(x,z,w,dd,retro?Math.min(h,16):h,rot,c);
   }
   // landmarks
+  if(kanmon){
   add(150,northZ(150)-40,95,45,12,0,lc('#c8c3b8'));                                   // 唐戸市場
   add(-150,northZ(-150)-78,34,20,44,0,lc('#e3ddd2'));                                  // 下関グランドホテル
   const rz=southZ(390)+140; add(390,rz,22,22,127,0.1,lc('#e6dfd0'));                   // 門司港レトロ展望タワー
   add(540,southZ(540)+95,48,20,14,0,lc('#a15c3f'));                                    // 旧門司税関あたり
+  }
   const geo=new THREE.BoxGeometry(1,1,1).translate(0,0.5,0);
   const mesh=new THREE.InstancedMesh(geo,buildMat,list.length);
   const m4=new THREE.Matrix4(), q=new THREE.Quaternion(), s=new THREE.Vector3(), p=new THREE.Vector3(), yAx=new THREE.Vector3(0,1,0);
@@ -162,12 +167,12 @@ function textTexture(lines, opt){
    ============================================================ */
 const lightPts=[];   // [x,y,z,r,g,b,size]
 function addLight(x,y,z,hex,size){ const c=lc(hex); lightPts.push([x,y,z,c.r,c.g,c.b,size]); }
-for(const side of [northZ,southZ]){
+if(!STAGE.wild) for(const side of [northZ,southZ]){
   const sgn = side===northZ?-1:1;
   for(let x=-3200;x<=4200;x+=24){ const z=side(x)+sgn*7; if(terrainH(x,z)>30) continue; addLight(x+rnd()*4,8.5,z,rnd()<.8?'#ffc98a':'#e7f2ff',5); }
 }
-/* ---- Kanmon Bridge ---- */
-(function buildBridge(){
+/* ---- suspension bridge across the narrows ---- */
+if(STAGE.bridge!==false) (function buildBridge(){
   const x=BRIDGE_X, deckY=61, towerH=141;
   const zt1=northZ(x)-25, zt2=southZ(x)+25, mid=(zt1+zt2)/2, half=(zt2-zt1)/2;
   const g=new THREE.Group();
@@ -192,7 +197,7 @@ for(const side of [northZ,southZ]){
   scene.add(g);
 })();
 /* ---- Kaikyo Yume Tower (Shimonoseki landmark) ---- */
-(function(){
+if(STAGE.id==='kanmon') (function(){
   const x=-420, z=northZ(-420)-120, base=terrainH(x,z)-1;
   const t=new THREE.Mesh(new THREE.BoxGeometry(13,145,13), new THREE.MeshStandardMaterial({color:lc('#9fb4c4'),roughness:.15,metalness:.7}));
   t.position.set(x,base+72.5,z); scene.add(t);
@@ -326,7 +331,7 @@ function buildPier(P, style){
     const numTex=textTexture([{t:'1',font:'900 150px "Chakra Petch",sans-serif',y:.55}],{w:256,h:256,bg:'#f3f5f6',fg:'#111'});
     const num=new THREE.Mesh(new THREE.PlaneGeometry(1.2,1.2),new THREE.MeshStandardMaterial({map:numTex,roughness:.6}));
     num.position.set(0,6.95,dir>0?0.22:-0.22); if(dir<0) num.rotation.y=Math.PI; fr.add(num);
-    const signTex=textTexture([{t:'関門汽船唐戸1号桟橋',font:'900 44px "Zen Kaku Gothic New",sans-serif',y:.32},{t:'KARATO PIER 1',font:'700 38px "Chakra Petch",sans-serif',y:.76}],{w:640,h:160,bg:'#1c4ea6',fg:'#fff'});
+    const signTex=textTexture([{t:P.sign[0],font:'900 44px "Zen Kaku Gothic New",sans-serif',y:.32},{t:P.sign[1],font:'700 38px "Chakra Petch",sans-serif',y:.76}],{w:640,h:160,bg:'#1c4ea6',fg:'#fff'});
     const tmat=new THREE.MeshStandardMaterial({map:signTex,roughness:.5,emissive:lc('#ffffff'),emissiveMap:signTex,emissiveIntensity:0});
     const sign=new THREE.Mesh(new THREE.PlaneGeometry(4.8,1.2),tmat); sign.position.set(0,5.4,dir>0?0.25:-0.25); if(dir<0) sign.rotation.y=Math.PI; fr.add(sign);
     const sign2=sign.clone(); sign2.rotation.y=dir>0?Math.PI:0; sign2.position.z=-sign.position.z; fr.add(sign2);
@@ -341,7 +346,7 @@ function buildPier(P, style){
     }
     const roof=box(4.6,0.25,len,M.offwhite,0,2.9,0,gw);
     for(let i=-len/2+2;i<=len/2-2;i+=6){ box(0.18,2.6,0.18,M.offwhite,-2,1.5,i,gw); box(0.18,2.6,0.18,M.offwhite,2,1.5,i,gw); }
-    const signTex=textTexture([{t:'門司港桟橋',font:'900 50px "Zen Kaku Gothic New",sans-serif',y:.34},{t:'MOJIKO PIER  関門汽船のりば',font:'700 30px "Zen Kaku Gothic New",sans-serif',y:.76}],{w:640,h:160,bg:'#f4f6f8',fg:'#1c3b6e'});
+    const signTex=textTexture([{t:P.sign[0],font:'900 50px "Zen Kaku Gothic New",sans-serif',y:.34},{t:P.sign[1],font:'700 30px "Zen Kaku Gothic New",sans-serif',y:.76}],{w:640,h:160,bg:'#f4f6f8',fg:'#1c3b6e'});
     const tmat=new THREE.MeshStandardMaterial({map:signTex,roughness:.5,emissive:lc('#ffffff'),emissiveMap:signTex,emissiveIntensity:0});
     const sign=new THREE.Mesh(new THREE.PlaneGeometry(6,1.5),tmat);
     sign.position.set(gx,5.2,shore+dir*6); sign.rotation.y = dir>0?Math.PI:0; scene.add(sign);
@@ -362,8 +367,7 @@ function buildPier(P, style){
   beacon.position.y=15; P.marker.add(beacon);
   P.marker.position.set(P.bx,0.4,P.bz); scene.add(P.marker);
 }
-buildPier(PIERS.karato,'karato');
-buildPier(PIERS.moji,'moji');
+for(const k in PIERS) buildPier(PIERS[k],PIERS[k].style);
 /* ============================================================
    Harbour dressing: promenades, railings, lamp posts, trees,
    benches, quay fenders, ticket offices, moored boats, landmarks
@@ -372,7 +376,7 @@ const TREES=[];
 function shoreZ(P,x,d){ return (P.dir>0?northZ(x):southZ(x)) - P.dir*d; }
 function shoreRot(P,x){ const f=P.dir>0?northZ:southZ; return -Math.atan((f(x+4)-f(x-4))/8); }
 function buildHarbor(P,style){
-  const g=new THREE.Group(); scene.add(g);
+  const g=new THREE.Group(), kanmon=STAGE.id==='kanmon'; scene.add(g);
   const pave=new THREE.MeshStandardMaterial({color:lc(style==='moji'?'#b9a48e':'#a99f93'),roughness:.9});
   const pave2=new THREE.MeshStandardMaterial({color:lc('#8c8378'),roughness:.9});
   const railM=new THREE.MeshStandardMaterial({color:lc(style==='moji'?'#2d3a33':'#d5d9dc'),roughness:.45,metalness:.5});
@@ -407,7 +411,7 @@ function buildHarbor(P,style){
   box(12,3.4,6,M.white,0,1.7,0,off); box(12.6,0.3,6.6,M.offwhite,0,3.55,0,off);
   box(11,1.9,0.05,new THREE.MeshStandardMaterial({color:lc('#1d2a33'),roughness:.08,metalness:.8}),0,1.45,P.dir*3.02,off);
   box(12.02,0.45,6.02,new THREE.MeshStandardMaterial({color:lc('#1d4fa6'),roughness:.5}),0,2.9,0,off);
-  const tsign=new THREE.Mesh(new THREE.PlaneGeometry(6,0.42),new THREE.MeshStandardMaterial({map:textTexture([{t:style==='moji'?'関門汽船  門司港のりば':'関門汽船  唐戸のりば',font:'900 54px "Zen Kaku Gothic New",sans-serif',y:.55}],{w:768,h:96,bg:'#1d4fa6',fg:'#ffffff'}),roughness:.5}));
+  const tsign=new THREE.Mesh(new THREE.PlaneGeometry(6,0.42),new THREE.MeshStandardMaterial({map:textTexture([{t:P.office,font:'900 54px "Zen Kaku Gothic New",sans-serif',y:.55}],{w:768,h:96,bg:'#1d4fa6',fg:'#ffffff'}),roughness:.5}));
   tsign.position.set(0,2.9,P.dir*3.04); if(P.dir<0) tsign.rotation.y=Math.PI; off.add(tsign);
   g.add(off);
   // small craft moored along the quay
@@ -418,16 +422,16 @@ function buildHarbor(P,style){
     mergeGroup(bg); bg.traverse(o=>{ if(o.isMesh) o.castShadow=true; });
     bg.position.set(x,0,shoreZ(P,x,-2.6)); bg.rotation.y=shoreRot(P,x); scene.add(bg); moored.push({g:bg,x,z:bg.position.z,ph:rnd()*6}); };
   if(style==='karato'){ boat(P.x+62,11,'#f1f1ee'); boat(P.x+95,9,'#2a5c8f'); boat(P.x+132,13,'#f1f1ee'); boat(P.x+168,8,'#b23b30'); }
-  else { boat(P.x-95,11,'#f1f1ee'); boat(P.x-128,9,'#2a5c8f'); boat(P.x-170,12,'#f1f1ee'); boat(372,8,'#b23b30'); boat(398,10,'#f1f1ee'); boat(428,7,'#2a5c8f'); }
+  else { boat(P.x-95,11,'#f1f1ee'); boat(P.x-128,9,'#2a5c8f'); boat(P.x-170,12,'#f1f1ee'); if(kanmon){ boat(372,8,'#b23b30'); boat(398,10,'#f1f1ee'); boat(428,7,'#2a5c8f'); } }
   // landmarks
-  if(style==='karato'){
+  if(kanmon && style==='karato'){
     const kw=new THREE.Group(); const z=shoreZ(P,-40,40); kw.position.set(-40,terrainH(-40,z),z); kw.rotation.y=shoreRot(P,-40);
     box(64,11,24,new THREE.MeshStandardMaterial({color:lc('#c9a77c'),roughness:.8}),0,5.5,0,kw);
     box(64.4,3,24.4,M.glass,0,7,0,kw); box(66,0.6,26,M.offwhite,0,11.2,0,kw); g.add(kw);
     const aq=new THREE.Group(); const z2=northZ(-420)-55; aq.position.set(-420,terrainH(-420,z2),z2);
     const dome=new THREE.Mesh(new THREE.SphereGeometry(18,24,12,0,Math.PI*2,0,Math.PI/2),new THREE.MeshStandardMaterial({color:lc('#9fc4d6'),roughness:.1,metalness:.7})); dome.scale.y=0.6; dome.position.y=6; aq.add(dome);
     box(56,6,38,M.white,0,3,0,aq); g.add(aq);
-  } else {
+  } else if(kanmon){
     const st=new THREE.Group(); const zs=shoreZ(P,640,165); st.position.set(640,terrainH(640,zs),zs); st.rotation.y=shoreRot(P,640);
     const cream=new THREE.MeshStandardMaterial({color:lc('#eadfc4'),roughness:.8}), roofM=new THREE.MeshStandardMaterial({color:lc('#5d7c73'),roughness:.6,metalness:.2});
     box(48,9,12,cream,0,4.5,0,st); box(14,12,14,cream,0,6,0,st);
@@ -443,8 +447,8 @@ function buildHarbor(P,style){
   }
   const board=(txt,x,d,y,w)=>{ const m=new THREE.Mesh(new THREE.PlaneGeometry(w,w*0.18),new THREE.MeshStandardMaterial({map:textTexture([{t:txt,font:'900 70px "Zen Kaku Gothic New",sans-serif',y:.55}],{w:720,h:130,bg:'#f4f1ea',fg:'#20324f'}),roughness:.6,emissive:lc('#ffffff'),emissiveIntensity:0}));
     m.userData.keep=true; m.position.set(x,y,shoreZ(P,x,d)); m.rotation.y=shoreRot(P,x)+(P.dir>0?0:Math.PI); scene.add(m); SIGNS.push(m); };
-  if(style==='karato'){ board('カモンワーフ',-40,27.6,10,16); board('しものせき水族館 海響館',-420,-120,9,22); board('唐戸市場',150,17.3,10.5,14); board('下関グランドホテル',-150,67.8,40,16); }
-  else { board('門司港駅',640,158,15,12); board('旧門司税関',520,33.3,10,12); board('ブルーウィングもじ',400,-8,9.5,14); }
+  if(kanmon && style==='karato'){ board('カモンワーフ',-40,27.6,10,16); board('しものせき水族館 海響館',-420,-120,9,22); board('唐戸市場',150,17.3,10.5,14); board('下関グランドホテル',-150,67.8,40,16); }
+  else if(kanmon){ board('門司港駅',640,158,15,12); board('旧門司税関',520,33.3,10,12); board('ブルーウィングもじ',400,-8,9.5,14); }
   mergeGroup(g);
   g.traverse(o=>{ if(o.isMesh){ o.receiveShadow=true; o.castShadow=true; } });
 }
@@ -484,7 +488,7 @@ function buildTrees(){
   const m4=new THREE.Matrix4(), q=new THREE.Quaternion(), s=new THREE.Vector3(), p=new THREE.Vector3(), c=new THREE.Color();
   TREES.forEach(([x,z,y,sc],i)=>{ m4.compose(p.set(x,y,z),q.identity(),s.set(sc,sc,sc)); trunk.setMatrixAt(i,m4);
     for(let k=0;k<2;k++){ m4.compose(p.set(x+(k?0.8:-0.5)*sc,y+(3.6+k*0.9)*sc,z+(k?0.4:-0.3)*sc),q.identity(),s.set(2.3*sc*(k?0.8:1),2.0*sc*(k?0.8:1),2.3*sc*(k?0.8:1))); crown.setMatrixAt(i*2+k,m4);
-      c.copy(lc(['#3f6b35','#4d7a3a','#365e30','#5a8443'][(i+k)%4])); crown.setColorAt(i*2+k,c); } });
+      c.copy(lc(((STAGE.forest&&STAGE.forest.colors)||['#3f6b35','#4d7a3a','#365e30','#5a8443'])[(i+k)%4])); crown.setColorAt(i*2+k,c); } });
   trunk.castShadow=crown.castShadow=true; scene.add(trunk,crown);
 }
 /* seagulls: instanced bodies and wings, flapping and circling over the harbours */
@@ -496,7 +500,7 @@ function buildGulls(){
   const wm=new THREE.MeshStandardMaterial({color:lc('#f2f3f1'),roughness:.8,side:THREE.DoubleSide});
   gullWL=new THREE.InstancedMesh(wing,wm,N); gullWR=new THREE.InstancedMesh(wr,wm,N);
   gullBody=new THREE.InstancedMesh(new THREE.CylinderGeometry(0.06,0.1,0.5,5).rotateZ(Math.PI/2),wm,N);
-  for(let i=0;i<N;i++){ const P=i<8?PIERS.karato:PIERS.moji; GULLS.push({cx:P.x+(rnd()-.5)*120,cz:P.pz+(rnd()-.5)*80,r:15+rnd()*35,h:10+rnd()*18,sp:(0.15+rnd()*0.15)*(rnd()<.5?1:-1),ph:rnd()*6.28,fl:rnd()*6}); }
+  for(let i=0;i<N;i++){ const P=Object.values(PIERS)[i<8?0:1]; GULLS.push({cx:P.x+(rnd()-.5)*120,cz:P.pz+(rnd()-.5)*80,r:15+rnd()*35,h:10+rnd()*18,sp:(0.15+rnd()*0.15)*(rnd()<.5?1:-1),ph:rnd()*6.28,fl:rnd()*6}); }
   [gullWL,gullWR,gullBody].forEach(m=>{ m.frustumCulled=false; scene.add(m); });
 }
 const _gm=new THREE.Matrix4(), _gq=new THREE.Quaternion(), _ge=new THREE.Euler(), _gp=new THREE.Vector3(), _gs=new THREE.Vector3(1,1,1);
@@ -532,12 +536,9 @@ function buildCargo(len,beam,hullHex){
   const l2=navLight(0xffffff,5,false); l2.position.set(len/2-8,14,0); g.add(l2);
   return g;
 }
-const cargos=[
-  {len:130,beam:21,hex:'#1d2b3a',z:-150,dir:1,spd:6.2,x:-2600},
-  {len:150,beam:24,hex:'#2e3b2f',z:110,dir:-1,spd:5.4,x:1800},
-  {len:95,beam:16,hex:'#4a3a2a',z:-40,dir:1,spd:4.6,x:-600},
-].map(c=>{ const g=buildCargo(c.len,c.beam,c.hex); g.rotation.order='YZX'; scene.add(g); return Object.assign(c,{g}); });
-buildHarbor(PIERS.karato,'karato'); buildHarbor(PIERS.moji,'moji'); buildBlueWing();
+const cargos=STAGE.cargos.map(c=>{ const g=buildCargo(c.len,c.beam,c.hex); g.rotation.order='YZX'; scene.add(g); return Object.assign(c,{g}); });
+for(const k in PIERS) buildHarbor(PIERS[k],PIERS[k].style);
+if(STAGE.id==='kanmon') buildBlueWing();
 /* ============================================================
    Proper harbour works: breakwaters with tetrapods & lighthouses,
    a second pontoon, a fishing-boat finger pier, a cargo wharf with
@@ -637,11 +638,17 @@ function buildHarbourWorks(){
   buildTetrapods();
 }
 
-buildHarbourWorks(); buildLampPosts(); buildTrees(); buildGulls();
+if(STAGE.id==='kanmon') buildHarbourWorks();
+// forests along natural shores
+if(STAGE.forest){ const F=STAGE.forest;
+  for(let i=0;i<F.n;i++){ const x=F.x[0]+rnd()*(F.x[1]-F.x[0]), d=F.d[0]+Math.pow(rnd(),1.5)*(F.d[1]-F.d[0]), z=rnd()<.5?northZ(x)-d:southZ(x)+d;
+    if(Object.values(PIERS).some(p=>Math.abs(x-p.x)<70 && d<45)) continue;
+    TREES.push([x,z,terrainH(x,z),F.size*(0.7+rnd()*0.9)]); } }
+buildLampPosts(); buildTrees(); buildGulls();
 
 /* ---- lateral buoys ---- */
 const buoys=[];
-[[-600,-240,'red'],[500,-230,'red'],[1400,-260,'red'],[-500,260,'green'],[700,250,'green'],[1500,230,'green']].forEach(([x,z,c])=>{
+STAGE.buoys.forEach(([x,z,c])=>{
   const g=new THREE.Group(); const mat=c==='red'?M.red:M.green;
   const body=new THREE.Mesh(new THREE.CylinderGeometry(1.1,1.4,2.2,14),mat); body.position.y=0.6; g.add(body);
   const top=new THREE.Mesh(c==='red'?new THREE.CylinderGeometry(.6,.6,1.6,10):new THREE.ConeGeometry(.9,1.8,10),mat); top.position.y=2.6; g.add(top);

@@ -5,8 +5,8 @@
    Main loop
    ============================================================ */
 buildLights();
-applyTOD('day'); applySea(1); setCam(0);
-setMoored('karato');
+applyTOD('day'); applySea(STAGE.sea===undefined?1:STAGE.sea); setCam(0);
+setMoored(STAGE.piers[0].key);
 cam.pos.set(S.x-40,14,S.z-30);
 requestAnimationFrame(()=>layoutLever());
 window.addEventListener('resize',layoutLever);
@@ -28,15 +28,18 @@ function applyQuality(){
   if(sun.shadow.mapSize.x!==sm){ sun.shadow.mapSize.set(sm,sm); if(sun.shadow.map){ sun.shadow.map.dispose(); sun.shadow.map=null; } }
   $('#vQ').textContent=(QUALITY.mode==='auto'?'自動・':'')+L.name;
 }
-let perfAcc=0, perfN=0, perfT=0;
+let perfAcc=0, perfN=0, perfT=0, qHold=0;
 function adaptQuality(dt){
   if(QUALITY.mode!=='auto' || document.hidden) return;
   perfAcc+=dt; perfN++; perfT+=dt;
   if(perfT<1.5) return;
   const avg=perfAcc/perfN; perfAcc=0; perfN=0; perfT=0;
   const L=QLEVELS[QUALITY.level];
-  if(avg>1/36){ if(QUALITY.pr>0.62){ QUALITY.pr=Math.max(0.6,QUALITY.pr*0.85); } else if(QUALITY.level>0){ QUALITY.level--; } applyQuality(); }
-  else if(avg<1/57){ if(QUALITY.pr<L.prMax-0.01){ QUALITY.pr=Math.min(L.prMax,QUALITY.pr*1.1); applyQuality(); } else if(QUALITY.level<2 && avg<1/75){ QUALITY.level++; QUALITY.pr=Math.min(QUALITY.pr,QLEVELS[QUALITY.level].prMax); applyQuality(); } }
+  // Resizing the canvas wipes it, so only touch the quality when it really changes (and before the frame is drawn, see frame()).
+  // After stepping down, wait a while before trying to step back up, or a machine on the edge keeps flipping between the two.
+  qHold=Math.max(0,qHold-1.5);
+  if(avg>1/36){ if(QUALITY.pr>0.62){ QUALITY.pr=Math.max(0.6,QUALITY.pr*0.85); } else if(QUALITY.level>0){ QUALITY.level--; } else return; qHold=30; applyQuality(); }
+  else if(avg<1/57 && qHold<=0){ if(QUALITY.pr<L.prMax-0.01){ QUALITY.pr=Math.min(L.prMax,QUALITY.pr*1.1); applyQuality(); } else if(QUALITY.level<2 && avg<1/75){ QUALITY.level++; QUALITY.pr=Math.min(QUALITY.pr,QLEVELS[QUALITY.level].prMax); applyQuality(); } }
 }
 const reflCam=new THREE.PerspectiveCamera();
 const clipPlane=new THREE.Plane(new THREE.Vector3(0,1,0),1e6);
@@ -83,6 +86,7 @@ const blitQuad=new THREE.Mesh(new THREE.PlaneGeometry(2,2),new THREE.MeshBasicMa
 let last=performance.now(), mmT=0;
 function frame(now){
   const dt=Math.min(0.05,(now-last)/1000); last=now;
+  adaptQuality(dt);
   game.simT+=dt; const t=game.simT; U.uTime.value=t;
   U.uFlow.value.x+=currentAt(camera.position.x)*dt;
   if(game.state==='sailing'){ game.elapsed+=dt; game.msgT-=dt; }
@@ -121,7 +125,6 @@ function frame(now){
       renderer.setScissorTest(true); renderer.setViewport(r.left+4,y+4,r.width-8,r.height-8); renderer.setScissor(r.left+4,y+4,r.width-8,r.height-8);
       blitQuad.material.map=IN.mirrorRT.texture; renderer.render(blitScene,blitCam);
       renderer.setScissorTest(false); renderer.setViewport(0,0,window.innerWidth,window.innerHeight); } }
-  adaptQuality(dt);
   requestAnimationFrame(frame);
 }
 /* ============================================================

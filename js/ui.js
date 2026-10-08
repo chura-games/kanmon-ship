@@ -4,14 +4,54 @@
 /* ============================================================
    Camera
    ============================================================ */
-const CAM_MODES=[{k:'chase',label:'追従'},{k:'helm',label:'操舵席'},{k:'mirror',label:'右ミラー'},{k:'cabin',label:'客室'},{k:'high',label:'俯瞰'}];
+const CAM_MODES=[{k:'chase',label:'追従'},{k:'helm',label:'操舵席'},{k:'mirror',label:'右ミラー'},{k:'cabin',label:'客室'},{k:'high',label:'俯瞰'},{k:'pax',label:'お客様'}];
 let camMode=0;
 const cam={ yaw:0, pitch:0.22, dist:48, pos:new THREE.Vector3(-60,20,-560), look:new THREE.Vector3() };
 const camK=()=>CAM_MODES[camMode].k;
+/* cabin view: the passenger can walk (W/A/S/D) on the aft deck, through the door, along the aisle and round the lobby
+   in front of the helm partition. Boxes are [x0,x1,z0,z1] in the ship's frame and overlap where they connect. */
+const WALK={ x:-8.2, z:0.15, eye:1.6, speed:1.5, areas:[[-11.6,-8.9,-2.7,2.7],[-9.0,-8.5,-0.42,0.42],[-8.6,2.1,-0.38,0.38],[2.05,2.7,-2.1,2.1]] };
+const KEYS_HINT={ drive:$('#keys').textContent, walk:'W/A/S/D 歩く　ドラッグで見回す　C / 1〜6 視点　H 汽笛（歩いている間、舵は中央・速力はそのまま）',
+  pax:'W/A/S/D 歩く　F 乗る・降りる（渡し板の近くで）　ドラッグで見回す　C / 1〜6 視点' };
+const walking=()=>camK()==='cabin'||camK()==='pax';   // views in which the keys walk a person instead of working the ship
+/* passenger view: a customer on foot. Ashore they walk the quay, the gangway and the pontoon of PAX.pier (world coordinates);
+   with the ship's gangway down they can step aboard (F) and then walk the ship like the cabin view, and step off again at the other side. */
+const PAX={ onShip:false, pier:null, x:0, y:3.5, z:0 };
+function paxGround(x,z){ const P=PAX.pier, deck=P.pon.position.y+1.25, a=(z-P.shore)*P.dir;   // a: metres out from the quay edge
+  if(Math.abs(x-P.x)<16.6 && Math.abs(z-P.pz)<3.6) return deck;
+  if(Math.abs(x-P.gx)<1.5 && a>-3 && a<P.glen+0.6) return lerp(3.5,deck+0.15,clamp(a/P.glen,0,1));
+  const d=((P.dir>0?northZ(x):southZ(x))-z)*P.dir;                                              // d: metres inland
+  return (Math.abs(x-P.x)<70 && d>0.6 && d<14) ? Math.max(3.2,terrainH(x,z))+0.2 : null; }
+function enterPax(){ if(PAX.onShip) return;
+  let P=null, pd=1e9; for(const key in PIERS){ const q=PIERS[key], d=Math.hypot(S.x-q.bx,S.z-q.bz); if(d<pd){ pd=d; P=q; } }   // wait at the pier the ship is nearer
+  if(P!==PAX.pier){ PAX.pier=P; PAX.x=P.gx+7; PAX.z=shoreZ(P,PAX.x,6); PAX.y=paxGround(PAX.x,PAX.z)||3.5; }
+  cam.yaw=Math.atan2(-(S.z-PAX.z),S.x-PAX.x); }
+function walkShore(dt){
+  const f=(input.up?1:0)-(input.down?1:0), r=(input.right?1:0)-(input.left?1:0);
+  if(f||r){ const cy=Math.cos(cam.yaw), sy=Math.sin(cam.yaw), st=WALK.speed*dt/Math.hypot(f,r), nx=PAX.x+(cy*f+sy*r)*st, nz=PAX.z+(-sy*f+cy*r)*st;
+    if(paxGround(nx,nz)!==null){ PAX.x=nx; PAX.z=nz; } else if(paxGround(nx,PAX.z)!==null) PAX.x=nx; else if(paxGround(PAX.x,nz)!==null) PAX.z=nz; }
+  const g=paxGround(PAX.x,PAX.z); if(g!==null) PAX.y+=(g-PAX.y)*Math.min(1,dt*10); }
+/* F: step across the ship's gangway — aboard from the pontoon, or ashore from the aft deck */
+function paxCross(){
+  if(camK()!=='pax') return;
+  const down=dock.ext>0.95 && dock.P, u=ferry.userData, gate=[u.door.x,dock.side*2.3];
+  if(down && !PAX.onShip && dock.P===PAX.pier && Math.hypot(PAX.x-doorPoints().B.x,PAX.z-doorPoints().B.z)<3){ PAX.onShip=true; WALK.x=gate[0]; WALK.z=gate[1]; cam.yaw-=S.psi; toast('乗船しました','ok'); }
+  else if(down && PAX.onShip && Math.hypot(WALK.x-gate[0],WALK.z-gate[1])<2){ const B=doorPoints().B; PAX.onShip=false; PAX.pier=dock.P; PAX.x=B.x; PAX.z=B.z; PAX.y=B.y; cam.yaw+=S.psi; toast(PAX.pier.name+'で下船しました','ok'); }
+  else return toast(down?'船の渡し板のそばで押してください':'渡し板が掛かっているときに乗り降りできます');
+  viewGlass(); }
+function viewGlass(){ const k=camK(), inside=k==='helm'||k==='cabin'||(k==='pax'&&PAX.onShip); ferry.userData.glassMats.forEach((o,m)=>{ m.opacity=inside?o*0.14:o; }); }
+function walkCabin(dt){
+  const f=(input.up?1:0)-(input.down?1:0), r=(input.right?1:0)-(input.left?1:0); if(!f && !r) return;
+  const cy=Math.cos(cam.yaw), sy=Math.sin(cam.yaw), l=Math.hypot(f,r), st=WALK.speed*dt/l;
+  const ok=(x,z)=>WALK.areas.some(([x0,x1,z0,z1])=>x>=x0&&x<=x1&&z>=z0&&z<=z1);
+  const nx=WALK.x+(cy*f+sy*r)*st, nz=WALK.z+(-sy*f+cy*r)*st;
+  if(ok(nx,nz)){ WALK.x=nx; WALK.z=nz; } else if(ok(nx,WALK.z)) WALK.x=nx; else if(ok(WALK.x,nz)) WALK.z=nz;   // slide along walls
+}
 function setCabinLight(){ IN.cabLight.intensity=camK()==='cabin'?2.2:IN.night*0.9; }
 function setCam(i){ camMode=i; const k=camK(); $('#vCam').textContent=CAM_MODES[i].label; cam.yaw=0;
-  if(k==='chase'){cam.pitch=0.22;cam.dist=48;} if(k==='high'){cam.pitch=0.95;cam.dist=320;} if(k==='helm'){cam.pitch=-0.06;} if(k==='cabin'){cam.yaw=-0.55; cam.pitch=-0.05;} if(k==='mirror'){cam.pitch=0;}
-  setCabinLight();
+  if(k==='chase'){cam.pitch=0.22;cam.dist=48;} if(k==='high'){cam.pitch=0.95;cam.dist=320;} if(k==='helm'){cam.pitch=-0.06;} if(k==='cabin'){cam.yaw=0; cam.pitch=-0.05;} if(k==='mirror'){cam.pitch=0;} if(k==='pax'){ cam.pitch=0; enterPax(); }
+  viewGlass();
+  setCabinLight(); $('#keys').textContent=k==='cabin'?KEYS_HINT.walk:k==='pax'?KEYS_HINT.pax:KEYS_HINT.drive;
   $('#pip').hidden=(k!=='helm'); $('#mirrorTag').hidden=(k!=='mirror');
   IN.mirrorMat.map=(k==='helm'||k==='mirror')?IN.mirrorRT.texture:null; IN.mirrorMat.color.set((k==='helm'||k==='mirror')?0xffffff:0x223038); IN.mirrorMat.needsUpdate=true; }
 const _lp=new THREE.Vector3();
@@ -27,7 +67,11 @@ function updateCamera(dt,t){
   const sh=new THREE.Vector3((rnd()-.5)*shake,(rnd()-.5)*shake,(rnd()-.5)*shake);
   const k=camK();
   if(k==='helm'){ interiorView(new THREE.Vector3(3.92,3.95,0.42),sh); camera.fov=62; camera.updateProjectionMatrix(); return; }
-  if(k==='cabin'){ interiorView(new THREE.Vector3(-8.2,HULLF.deckY(sOf(-8))+1.55,0.15),sh); camera.fov=66; camera.updateProjectionMatrix(); return; }
+  if(k==='cabin'||(k==='pax'&&PAX.onShip)){ walkCabin(dt); interiorView(new THREE.Vector3(WALK.x,HULLF.deckY(sOf(WALK.x))+WALK.eye,WALK.z),sh); camera.fov=66; camera.updateProjectionMatrix(); return; }
+  if(k==='pax' && !PAX.onShip){ walkShore(dt);
+    camera.position.set(PAX.x,PAX.y+WALK.eye,PAX.z); camera.up.set(0,1,0);
+    _lp.set(Math.cos(cam.yaw)*Math.cos(cam.pitch),Math.sin(cam.pitch),-Math.sin(cam.yaw)*Math.cos(cam.pitch)).add(camera.position); camera.lookAt(_lp);
+    camera.fov=66; camera.updateProjectionMatrix(); return; }
   if(k==='mirror'){ setMirrorCam(); camera.position.copy(IN.mirrorCam.position); camera.quaternion.copy(IN.mirrorCam.quaternion); camera.up.set(0,1,0); camera.fov=40; camera.updateProjectionMatrix(); return; }
   if(camera.fov!==55){ camera.fov=55; camera.updateProjectionMatrix(); }
   camera.up.set(0,1,0);
@@ -44,7 +88,7 @@ function updateCamera(dt,t){
 const ptrs=new Map(); let pinch0=0, dist0=0;
 canvas.addEventListener('pointerdown',e=>{ canvas.setPointerCapture(e.pointerId); ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY}); if(ptrs.size===2){ const [a,b]=[...ptrs.values()]; pinch0=Math.hypot(a.x-b.x,a.y-b.y); dist0=cam.dist; } });
 canvas.addEventListener('pointermove',e=>{ const p=ptrs.get(e.pointerId); if(!p) return;
-  if(ptrs.size===1){ const dx=e.clientX-p.x, dy=e.clientY-p.y; cam.yaw-=dx*0.006; const ik=['helm','cabin'].includes(camK()); if(ik){ cam.yaw=clamp(cam.yaw,-2.6,2.6); } cam.pitch=clamp(cam.pitch+dy*0.004,ik?-0.6:0.02,ik?0.6:1.35); }
+  if(ptrs.size===1){ const dx=e.clientX-p.x, dy=e.clientY-p.y; cam.yaw-=dx*0.006; const ik=['helm','cabin','pax'].includes(camK()); if(camK()==='helm'){ cam.yaw=clamp(cam.yaw,-2.6,2.6); } cam.pitch=clamp(cam.pitch+dy*0.004,ik?-0.6:0.02,ik?0.6:1.35); }
   p.x=e.clientX; p.y=e.clientY;
   if(ptrs.size===2){ const [a,b]=[...ptrs.values()]; const d=Math.hypot(a.x-b.x,a.y-b.y); if(pinch0>0) cam.dist=clamp(dist0*pinch0/d,14,600); } });
 const endPtr=e=>{ ptrs.delete(e.pointerId); if(ptrs.size<2) pinch0=0; };
@@ -77,12 +121,12 @@ function leverFromEvent(e){
   if(game.state==='sailing') S.throttle=v;
 }
 let leverDrag=false;
-lever.addEventListener('pointerdown',e=>{ leverDrag=true; lever.setPointerCapture(e.pointerId); leverFromEvent(e); });
+lever.addEventListener('pointerdown',e=>{ if(AUTO.on) setAuto(false); leverDrag=true; lever.setPointerCapture(e.pointerId); leverFromEvent(e); });
 lever.addEventListener('pointermove',e=>{ if(leverDrag) leverFromEvent(e); });
 lever.addEventListener('pointerup',()=>leverDrag=false); lever.addEventListener('pointercancel',()=>leverDrag=false);
 const rud=$('#rud'); let rudDrag=false;
 function rudFromEvent(e){ const r=rud.getBoundingClientRect(); input.rudTouch=clamp(((e.clientX-r.left)/r.width-0.5)*2.2,-1,1); }
-rud.addEventListener('pointerdown',e=>{ rudDrag=true; rud.setPointerCapture(e.pointerId); rudFromEvent(e); });
+rud.addEventListener('pointerdown',e=>{ if(AUTO.on) setAuto(false); rudDrag=true; rud.setPointerCapture(e.pointerId); rudFromEvent(e); });
 rud.addEventListener('pointermove',e=>{ if(rudDrag) rudFromEvent(e); });
 const rudEnd=()=>{ rudDrag=false; input.rudTouch=null; };
 rud.addEventListener('pointerup',rudEnd); rud.addEventListener('pointercancel',rudEnd);
@@ -107,21 +151,27 @@ window.addEventListener('keydown',e=>{ if(e.code==='Escape') setMenu(false); });
   bind('#volMaster',()=>MASTERVOL,v=>MASTERVOL=v); bind('#volEng',()=>ENGVOL,v=>ENGVOL=v); bind('#volEnv',()=>ENVVOL,v=>ENVVOL=v); })();
 $('#bQ').onclick=()=>{ const order=['auto',0,1,2]; const cur=QUALITY.mode==='auto'?'auto':QUALITY.level; const nx=order[(order.indexOf(cur)+1)%4]; if(nx==='auto'){ QUALITY.mode='auto'; } else { QUALITY.mode='fixed'; QUALITY.level=nx; } applyQuality(); };
 $('#bHorn').onclick=()=>{ sfx.init(); sfx.horn(); };
+$('#gangBtn').onclick=workGangway;
+$('#bAuto').onclick=()=>setAuto(!AUTO.on);
 const KEYMAP={KeyW:'up',ArrowUp:'up',KeyS:'down',ArrowDown:'down',KeyA:'left',ArrowLeft:'left',KeyD:'right',ArrowRight:'right',KeyQ:'q',KeyE:'e'};
 window.addEventListener('keydown',e=>{
   if(e.target && e.target.tagName==='INPUT') return;
+  if(AUTO.on && (e.code==='KeyX' || (KEYMAP[e.code] && !walking()))) setAuto(false);   // taking the controls ends the autopilot
   if(KEYMAP[e.code]){ input[KEYMAP[e.code]]=true; e.preventDefault(); }
   if(e.code==='KeyX' && game.state==='sailing') S.throttle=0;
+  if(e.code==='KeyP' && !e.repeat) setAuto(!AUTO.on);
+  if(e.code==='KeyF' && !e.repeat) paxCross();
   if(e.code==='KeyC' && !e.repeat) setCam((camMode+1)%CAM_MODES.length);
-  if(/^Digit[1-5]$/.test(e.code)) setCam(+e.code.slice(5)-1);
+  if(/^Digit[1-6]$/.test(e.code)) setCam(+e.code.slice(5)-1);
   if(e.code==='KeyH' && !e.repeat){ sfx.init(); sfx.horn(); }
+  if(e.code==='KeyG' && !e.repeat) workGangway();
   if(e.code==='Enter' && !$('#intro').hidden) $('#start').click();
 });
 window.addEventListener('keyup',e=>{ if(KEYMAP[e.code]) input[KEYMAP[e.code]]=false; });
 window.addEventListener('blur',()=>{ for(const k in input) if(typeof input[k]==='boolean') input[k]=false; });
 
 const mm=$('#minimap'), mg=mm.getContext('2d');
-const MX0=-1500, MX1=2700, MZ0=-1575, MZ1=1575;
+const [MX0,MX1]=STAGE.map, MZ0=-(MX1-MX0)*0.375, MZ1=(MX1-MX0)*0.375;   // the map canvas is 4:3
 function drawMinimap(){
   const W=mm.width, H=mm.height, sx=W/(MX1-MX0), sz=H/(MZ1-MZ0);
   const X=x=>(x-MX0)*sx, Z=z=>(z-MZ0)*sz;
@@ -131,7 +181,7 @@ function drawMinimap(){
   mg.beginPath(); mg.moveTo(0,0); for(let x=MX0;x<=MX1;x+=40) mg.lineTo(X(x),Z(northZ(x))); mg.lineTo(W,0); mg.fill();
   mg.beginPath(); mg.moveTo(0,H); for(let x=MX0;x<=MX1;x+=40) mg.lineTo(X(x),Z(southZ(x))); mg.lineTo(W,H); mg.fill();
   // bridge
-  mg.strokeStyle=dark?'#dfe6ea':'#44525d'; mg.lineWidth=3; mg.beginPath(); mg.moveTo(X(BRIDGE_X),Z(northZ(BRIDGE_X)-60)); mg.lineTo(X(BRIDGE_X),Z(southZ(BRIDGE_X)+60)); mg.stroke();
+  if(STAGE.bridge!==false){ mg.strokeStyle=dark?'#dfe6ea':'#44525d'; mg.lineWidth=3; mg.beginPath(); mg.moveTo(X(BRIDGE_X),Z(northZ(BRIDGE_X)-60)); mg.lineTo(X(BRIDGE_X),Z(southZ(BRIDGE_X)+60)); mg.stroke(); }
   mg.strokeStyle=dark?'#c9d1d6':'#55606a'; mg.lineWidth=3; BW.forEach(pl=>{ mg.beginPath(); pl.forEach(([x,z],i)=>i?mg.lineTo(X(x),Z(z)):mg.moveTo(X(x),Z(z))); mg.stroke(); });
   mg.fillStyle=dark?'#9fb0c0':'#34495e'; EXTRA_PONTOONS.forEach(p=>mg.fillRect(X(p.x)-5,Z(p.z)-2,10,4));
   // piers
@@ -142,6 +192,7 @@ function drawMinimap(){
   // current arrow
   const cur=currentAt(S.x); if(Math.abs(cur)>0.05){ mg.strokeStyle='rgba(255,255,255,.85)'; mg.lineWidth=2; const cx=W-44, cy=H-16, L=Math.min(30,Math.abs(cur)*16)*Math.sign(cur);
     mg.beginPath(); mg.moveTo(cx-L,cy); mg.lineTo(cx+L,cy); mg.lineTo(cx+L-Math.sign(L)*7,cy-5); mg.moveTo(cx+L,cy); mg.lineTo(cx+L-Math.sign(L)*7,cy+5); mg.stroke(); }
+  drawRouteMap(mg,X,Z);
   // ship
   mg.save(); mg.translate(X(S.x),Z(S.z)); mg.rotate(-S.psi); mg.fillStyle='#ff4d3d'; mg.strokeStyle='#fff'; mg.lineWidth=2;
   mg.beginPath(); mg.moveTo(13,0); mg.lineTo(-8,7); mg.lineTo(-5,0); mg.lineTo(-8,-7); mg.closePath(); mg.fill(); mg.stroke(); mg.restore();
@@ -204,6 +255,8 @@ const sfx=(()=>{
       const f=ac.createBiquadFilter(); f.type='bandpass'; f.frequency.value=freq; f.Q.value=q||1.2; const gn=ac.createGain();
       gn.gain.setValueAtTime(0.0001,t); gn.gain.exponentialRampToValueAtTime(Math.max(0.0002,gain*ENVVOL),t+0.012); gn.gain.exponentialRampToValueAtTime(0.0001,t+dur);
       src.connect(f); f.connect(gn); gn.connect(master); src.start(t,Math.random()*2); src.stop(t+dur+0.05); },
+    /* a sea burst over the bow: a low boom under a long hiss of falling spray */
+    slam(v){ if(!ac||!on) return; this.thud(2+v*2.2); this.splash(clamp(0.3+v*0.16,0.3,0.8),150+Math.random()*70,0.6+v*0.15,0.6); this.splash(clamp(0.22+v*0.1,0.2,0.6),700+Math.random()*400,0.9+v*0.2,0.5); this.splash(clamp(0.12+v*0.06,0.1,0.35),2600+Math.random()*1200,1.3,0.7); },
     slap(v){ if(!ac||!on) return; this.splash(clamp(0.12+v*0.14,0.1,0.5),260+Math.random()*200,0.28+v*0.08,0.8); this.splash(clamp(0.05+v*0.06,0.04,0.25),1400+Math.random()*900,0.35,0.9);
       const t=ac.currentTime, o=ac.createOscillator(), g=ac.createGain(); o.type='sine'; o.frequency.setValueAtTime(95,t); o.frequency.exponentialRampToValueAtTime(45,t+0.18);
       g.gain.setValueAtTime(Math.max(0.002,clamp(0.1+v*0.12,0.05,0.4)*ENVVOL),t); g.gain.exponentialRampToValueAtTime(0.001,t+0.22); o.connect(g); g.connect(master); o.start(t); o.stop(t+0.25); },

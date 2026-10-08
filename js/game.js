@@ -38,10 +38,10 @@ function applySea(i){ seaIdx=i; waveAmp=SEA[i].a; U.uAmp.value=waveAmp; $('#vSea
    Game state & physics
    ============================================================ */
 const S = { x:0,z:0,psi:0,u:0,v:0,r:0,throttle:0,rudder:0,thr:0, y:0,vy:0,pitch:0,vp:0,roll:0,vr:0 };
-const game = { state:'intro', from:'karato', to:'moji', t0:0, elapsed:0, hits:0, departed:false, tide:true, simT:0, shake:0, msgT:0, dockInfo:null };
+const game = { state:'intro', from:STAGE.piers[0].key, to:STAGE.piers[1].key, t0:0, elapsed:0, hits:0, departed:false, tide:true, simT:0, shake:0, msgT:0, dockInfo:null };
 const input = { up:false, down:false, left:false, right:false, q:false, e:false, rudTouch:null, thTouch:0 };
 const VMAX=11, ACC=1.6, KD=ACC/(VMAX*VMAX);
-function currentAt(x){ if(!game.tide) return 0; return 0.95*Math.sin(game.simT*2*Math.PI/900+0.9)*(1+1.8*bumpX(x)); }
+function currentAt(x){ if(!game.tide) return 0; return STAGE.tide.amp*Math.sin(game.simT*2*Math.PI/900+0.9)*(1+STAGE.tide.narrows*bumpX(x)); }
 function placeAtBerth(key){ const P=PIERS[key]; Object.assign(S,{x:P.bx,z:P.bz,psi:0,u:0,v:0,r:0,throttle:0,rudder:0,thr:0,y:0,vy:0,pitch:0,vp:0,roll:0,vr:0}); }
 function shipPoint(lx,lz){ const c=Math.cos(S.psi), s=Math.sin(S.psi); return [S.x+c*lx+s*lz, S.z-s*lx+c*lz]; }
 const HULL_PTS=[[SHIP_L*0.49,0],[SHIP_L*0.3,SHIP_B*0.44],[SHIP_L*0.3,-SHIP_B*0.44],[SHIP_L*0.12,SHIP_B*0.52],[SHIP_L*0.12,-SHIP_B*0.52],[-SHIP_L*0.2,SHIP_B*0.52],[-SHIP_L*0.2,-SHIP_B*0.52],[-SHIP_L*0.47,SHIP_B*0.51],[-SHIP_L*0.47,-SHIP_B*0.51],[-SHIP_L*0.5,0]];
@@ -62,23 +62,25 @@ function cargoHit(t){
     }
   }
 }
-let slapCool=0, lastWakeT=0, bobRip=0;
+let slapCool=0, lastWakeT=0, bobRip=0, churn=0, burstCool=0;
 /* waterline stations (13 along the hull, starboard then port): sea level in the hull's frame, how fast it climbs the side, and the lingering impact */
 const WL={N:13, y:new Float32Array(26).fill(NaN), rise:new Float32Array(26)};
 function wlHalf(lx,side){ const u=clamp(lx/SHIP_L+0.5,0,1)*(WL.N-1), i=Math.min(WL.N-2,Math.floor(u)), o=side>0?0:WL.N; return lerp(U.uWL.value[o+i],U.uWL.value[o+i+1],u-i); }
 function stepShip(dt,t){
   // controls
-  if(game.state==='sailing'){
-    if(input.up) S.throttle=Math.min(1,S.throttle+dt*0.6);
-    if(input.down) S.throttle=Math.max(-0.5,S.throttle-dt*0.6);
-    let rt = input.rudTouch!==null ? input.rudTouch : (input.left?-1:0)+(input.right?1:0);
+  if(autoTick(dt)){ /* the autopilot has the controls */ }
+  else if(game.state==='sailing'){
+    const keys=!walking();   // in the cabin and passenger views the keys walk a person instead
+    if(keys && input.up) S.throttle=Math.min(1,S.throttle+dt*0.6);
+    if(keys && input.down) S.throttle=Math.max(-0.5,S.throttle-dt*0.6);
+    let rt = input.rudTouch!==null ? input.rudTouch : keys ? (input.left?-1:0)+(input.right?1:0) : 0;
     if(input.rudTouch===null && rt===0) S.rudder = Math.abs(S.rudder)<dt*0.9?0:S.rudder-Math.sign(S.rudder)*dt*0.9;
     else if(input.rudTouch!==null) S.rudder = rt;
     else S.rudder = clamp(S.rudder+rt*dt*1.4,-1,1);
-    S.thr = (input.q||input.thTouch<0?-1:0)+(input.e||input.thTouch>0?1:0);
+    S.thr = ((keys&&input.q)||input.thTouch<0?-1:0)+((keys&&input.e)||input.thTouch>0?1:0);
   } else { S.thr=0; }
   // surge
-  const accel = S.throttle*ACC - KD*S.u*Math.abs(S.u) - 0.03*S.u;
+  const accel = S.throttle*ACC*(1-0.35*Math.min(1,ROUTE.flood)) - KD*S.u*Math.abs(S.u) - 0.03*S.u;   // a flooded hull is sluggish
   S.u += accel*dt;
   const low = 1-clamp(Math.abs(S.u)/5,0,1);
   const flow = S.u + 2.6*S.throttle;
@@ -90,6 +92,7 @@ function stepShip(dt,t){
   const c=Math.cos(S.psi), s=Math.sin(S.psi), cur=currentAt(S.x);
   S.x += (c*S.u + s*S.v + cur)*dt;
   S.z += (-s*S.u + c*S.v)*dt;
+  whirlPull(dt); iceBump(dt);
   fenderCool-=dt; collide(t); cargoHit(t);
   if(dock.hold>0) holdAtBerth(dt,dock.hold);
   // buoyancy: the hull settles onto the plane that best fits the sea under its whole footprint (wider sections carry more),
@@ -102,31 +105,45 @@ function stepShip(dt,t){
       const yl=h-(S.y+lx*sinP-lz*sinR), r=(yl-WL.y[k])/Math.max(dt,1e-3);
       WL.y[k]=yl; WL.rise[k]=r===r?clamp(r,-6,6):0; wl[k]=HULLF.halfAt(st,yl);
       const hit=wl[k]>0.05?Math.max(0,WL.rise[k]-0.25)*(1+1.5*spf*st):0;   // water climbing the side, harder toward the bow at speed
-      slapU[k]=Math.max(slapU[k]*Math.exp(-dt*1.6),clamp(hit*0.8,0,1));
+      slapU[k]=Math.max(slapU[k]*Math.exp(-dt*0.55),clamp(hit*0.8,0,1));
       if(st>=0.7) bowRise=Math.max(bowRise,WL.rise[k]); else sideRise=Math.max(sideRise,hit);
       // spray and foam thrown off where the wave lands
-      let q=hit*(0.4+hit)*160*dt; q=Math.floor(q)+(rnd()<q%1?1:0);
+      let q=hit*(0.4+hit)*240*dt; q=Math.floor(q)+(rnd()<q%1?1:0);
       for(let j=0;j<q;j++){ const ex=lx+(rnd()-.5)*SHIP_L/(WL.N-1), ez=sd*(wl[k]+0.05); const [px,pz]=shipPoint(ex,ez);
-        const out=0.8+rnd()*1.6+hit*0.9, up=0.9+rnd()*1.2+hit*1.3;
+        const out=1.0+rnd()*2.0+hit*1.3, up=1.2+rnd()*1.8+hit*2.2;
         emit(px,h+0.05,pz,c*S.u*0.5+s*sd*out+cur,up,-s*S.u*0.5+c*sd*out,0.5+rnd()*0.8,dropSize(0.5+hit*0.4));
-        if(rnd()<0.5) fleck(px+s*sd*rnd()*0.8,pz+c*sd*rnd()*0.8,4+rnd()*7,0.12+rnd()*0.2); } } }
+        if(rnd()<0.2) fleck(px+s*sd*rnd()*0.8,pz+c*sd*rnd()*0.8,8+rnd()*8,0.12+rnd()*0.2); } } }
   const mx=swx/sw, slope=(swxh-mx*swh)/(swxx-mx*swx), heel=swzh/swzz;
-  const yT=swh/sw-slope*mx + spf*0.25;
+  const yT=swh/sw-slope*mx + spf*0.25 - ROUTE.flood*1.15;   // she sits lower as she takes on water
   S.vy += ((yT-S.y)*14 - S.vy*4.5)*dt; S.y += S.vy*dt;
   const pT=Math.atan(slope) + spf*0.04 + (accel>0?accel*0.004:0);
   S.vp += ((pT-S.pitch)*10 - S.vp*4)*dt; S.pitch += S.vp*dt;
-  const roT=Math.atan(-heel)*0.8 + S.r*S.u*0.035;
+  const roT=Math.atan(-heel)*0.8 + S.r*S.u*0.035 + Math.max(0,ROUTE.flood-1)*0.45;
   S.vr += ((roT-S.roll)*7 - S.vr*2.4)*dt; S.roll += S.vr*dt;
   ferry.position.set(S.x,S.y,S.z); ferry.rotation.set(S.roll,S.psi,S.pitch);
   // bow spray & slams
-  const slam = clamp(bowRise*spf*0.6,0,3);
-  slapCool-=dt; if(slapCool<=0){ if(slam>0.35){ sfx.slap(slam); slapCool=0.28+rnd()*0.2; } else if(sideRise>0.7){ sfx.slap(sideRise*0.35); slapCool=0.5+rnd()*0.4; } }
-  const rate = (spf*spf*3200 + spf*400 + slam*2600)*dt;
+  // getting under way: power is on but she is still slow, so the jets thrash the water and foam boils up all round the hull
+  churn+=(clamp(Math.abs(S.throttle)*1.5+Math.abs(S.thr)*0.8-Math.abs(S.u)/VMAX*2.2,0,1)-churn)*Math.min(1,dt*2.5); U.uChurn.value=churn;
+  if(churn>0.03){ let q=churn*260*dt; q=Math.floor(q)+(rnd()<q%1?1:0);
+    for(let i=0;i<q;i++){ const sd=rnd()<.5?1:-1, lx=(rnd()-0.5)*SHIP_L*0.98, lz=sd*(wlHalf(lx,sd)+rnd()*1.8); const [px,pz]=shipPoint(lx,lz);
+      fleck(px,pz,7+rnd()*8,0.14+rnd()*0.24);
+      if(rnd()<0.6) emit(px,S.y+0.1,pz,s*sd*(0.5+rnd()*1.5)+cur,0.8+rnd()*1.8*churn,c*sd*(0.5+rnd()*1.5),0.4+rnd()*0.5,dropSize(0.7)); } }
+  const slam = clamp(bowRise*spf*0.9,0,3);
+  // a hard meeting with a sea: sheets of water thrown up and out from both bows, with a thump
+  burstCool-=dt;
+  if(slam>0.55 && burstCool<=0){ burstCool=0.9+rnd()*0.5; game.shake=Math.max(game.shake,0.1+0.1*slam); sfx.slam(slam);
+    const nb=Math.floor(380+slam*600);
+    for(let i=0;i<nb;i++){ const sd=i&1?1:-1, lx=SHIP_L*(0.16+rnd()*0.26), lz=sd*(wlHalf(lx,sd)+0.1+rnd()*0.6); const [px,pz]=shipPoint(lx,lz);
+      const out=3+rnd()*6+slam*2, up=4+rnd()*6+slam*2.2, fw=S.u*(0.55+rnd()*0.35);
+      emit(px,S.y+0.2+rnd()*0.8,pz,c*fw+s*sd*out+cur,up,-s*fw+c*sd*out,1.0+rnd()*1.4,rnd()<0.7?0.03+rnd()*0.09:0.12+rnd()*0.3*(0.6+slam*0.4)); }
+    addRipple(...shipPoint(SHIP_L*0.3,0),1.4+slam*0.5,t); }
+  slapCool-=dt; if(slapCool<=0){ if(slam>0.3){ sfx.slap(slam*1.5); slapCool=0.28+rnd()*0.2; } else if(sideRise>0.6){ sfx.slap(sideRise*0.6); slapCool=0.45+rnd()*0.35; } }
+  const rate = (spf*spf*3200 + spf*400 + slam*3600)*dt;
   let n = Math.floor(rate) + (rnd()<rate%1?1:0);
   for(let i=0;i<n;i++){
     const side = rnd()<.5?1:-1, lx=SHIP_L*(0.05+rnd()*0.3), lz=side*(wlHalf(lx,side)+0.05+rnd()*1.4*spf);
     const [wx,wz]=shipPoint(lx,lz);
-    const out=2.5+rnd()*5*spf+slam*2.5, up=1.5+rnd()*4.5*spf+slam*3;
+    const out=2.5+rnd()*5*spf+slam*3, up=1.5+rnd()*4.5*spf+slam*4;
     const vx=c*S.u*0.55 + s*side*out + cur, vz=-s*S.u*0.55 + c*side*out;
     emit(wx, S.y+0.1+rnd()*0.5*spf, wz, vx*(0.85+rnd()*0.3), up*(0.7+rnd()*0.6), vz*(0.85+rnd()*0.3), 0.7+rnd()*1.2, dropSize(0.6+spf+slam*0.5));
   }
@@ -152,6 +169,7 @@ function stepShip(dt,t){
   wakeT.update(t,{x:tx,z:tz,sx:s,sz:c,str,sp:Math.max(speed,1),t},drift);
   wakeK.update(t,{x:tx,z:tz,sx:s,sz:c,str:clamp((speed-2)/6,0,1),sp:speed,t},drift);
   U.uShip.value.set(S.x,S.z,S.psi,S.u);
+  { const w=U.uWake.value; w.x+=(S.u-w.x)*Math.min(1,dt/3.5); w.y=Math.exp(-Math.abs(S.u-w.x)*1.1); }   // see kelvin() in js/core.js
   // flag & radar
   const ud=ferry.userData; ud.radar.rotation.y+=dt*2.6;
   const fp=ud.flagGeo.attributes.position, fb=ud.flagBase; for(let i=0;i<fp.count;i++){ const x=fb[i*3]; fp.array[i*3+2]=(Math.sin(x*5-t*9)*0.12+Math.sin(x*3.1-t*5.3)*0.05)*x*(0.6+spf); }
@@ -159,8 +177,8 @@ function stepShip(dt,t){
   const ep=ud.ensGeo.attributes.position, eb=ud.ensBase; for(let i=0;i<ep.count;i++){ const x=-eb[i*3]; ep.array[i*3+2]=(Math.sin(x*5-t*8.3+1)*0.11+Math.sin(x*2.7-t*4.9)*0.05)*x*(0.6+spf); } ep.needsUpdate=true; ud.ensGeo.computeVertexNormals();
 }
 /* tiny floating foam flecks: shed by the wake, by landing spray, by breaking crests and against walls; they drift with the tide */
-const FL_N=5200;
-const flk={pos:new Float32Array(FL_N*3),life:new Float32Array(FL_N),max:new Float32Array(FL_N),size:new Float32Array(FL_N),aS:new Float32Array(FL_N),aA:new Float32Array(FL_N),ph:new Float32Array(FL_N),cur:0};
+const FL_N=11000, FL_LONG=4500;   // the first FL_LONG slots are kept for the long-lived flecks of the wake, so the busy short-lived ones cannot overwrite them
+const flk={pos:new Float32Array(FL_N*3),life:new Float32Array(FL_N),max:new Float32Array(FL_N),size:new Float32Array(FL_N),aS:new Float32Array(FL_N),aA:new Float32Array(FL_N),ph:new Float32Array(FL_N),sh:new Float32Array(FL_N),cur:FL_LONG,curL:0};
 const flGeo=new THREE.BufferGeometry(); flGeo.setAttribute('position',new THREE.BufferAttribute(flk.pos,3)); flGeo.setAttribute('aSize',new THREE.BufferAttribute(flk.aS,1)); flGeo.setAttribute('aAlpha',new THREE.BufferAttribute(flk.aA,1));
 const flMat=new THREE.ShaderMaterial({ uniforms:U, transparent:true, depthWrite:false, fog:false,
   vertexShader:`uniform float uScale; attribute float aSize; attribute float aAlpha; varying float vA;
@@ -170,41 +188,40 @@ const flMat=new THREE.ShaderMaterial({ uniforms:U, transparent:true, depthWrite:
       float a=smoothstep(1.0,0.35,r)*vA; vec3 col=vec3(0.93,0.97,1.0)*(uAmbient*0.95+uSunColor*max(uSunDir.y,0.0)*0.85);
       gl_FragColor=vec4(col,a*0.7); ${TAIL} }` });
 const flPoints=new THREE.Points(flGeo,flMat); flPoints.frustumCulled=false; flPoints.renderOrder=2; scene.add(flPoints);
-function fleck(x,z,life,size){ size*=0.45; const i=flk.cur; flk.cur=(flk.cur+1)%FL_N; flk.pos[i*3]=x; flk.pos[i*3+2]=z; flk.life[i]=life; flk.max[i]=life; flk.size[i]=size; flk.ph[i]=rnd()*6.28; }
+function fleck(x,z,life,size){ size*=0.45; let i; if(life>=25){ i=flk.curL; flk.curL=(i+1)%FL_LONG; } else { i=flk.cur; flk.cur=i+1<FL_N?i+1:FL_LONG; } flk.pos[i*3]=x; flk.pos[i*3+2]=z; flk.life[i]=life; flk.max[i]=life; flk.size[i]=size; flk.ph[i]=rnd()*6.28; flk.sh[i]=shelter(-landD(x,z)); }   // flecks barely move, so the shelter where they started will do
 function updateFlecks(dt,t){
   // shed from the moving ferry: along the hull sides and in the wake
   const sp=Math.hypot(S.u,S.v), c=Math.cos(S.psi), s=Math.sin(S.psi);
-  let n=(sp*55+Math.abs(S.throttle)*40)*dt; n=Math.floor(n)+(rnd()<n%1?1:0);
-  for(let i=0;i<n;i++){ const lx=-SHIP_L*0.5-rnd()*5, lz=(rnd()-0.5)*(2.6+rnd()*2.2); fleck(S.x+c*lx+s*lz,S.z-s*lx+c*lz,22+rnd()*38,0.12+rnd()*0.24); }
-  let m=(sp*70)*dt; m=Math.floor(m)+(rnd()<m%1?1:0);
-  for(let i=0;i<m;i++){ const side=rnd()<.5?1:-1, lx=(rnd()-0.3)*SHIP_L*0.8, lz=side*(wlHalf(lx,side)+0.1+rnd()*1.2); fleck(S.x+c*lx+s*lz,S.z-s*lx+c*lz,3+rnd()*5,0.1+rnd()*0.16); }
+  let n=(sp*11+Math.abs(S.throttle)*12)*dt; n=Math.floor(n)+(rnd()<n%1?1:0);
+  for(let i=0;i<n;i++){ const lx=-SHIP_L*0.5-rnd()*5, lz=(rnd()-0.5)*(2.6+rnd()*2.2); fleck(S.x+c*lx+s*lz,S.z-s*lx+c*lz,30+rnd()*45,0.12+rnd()*0.24); }
+  let m=(sp*22)*dt; m=Math.floor(m)+(rnd()<m%1?1:0);
+  for(let i=0;i<m;i++){ const side=rnd()<.5?1:-1, lx=(rnd()-0.3)*SHIP_L*0.8, lz=side*(wlHalf(lx,side)+0.1+rnd()*1.2); fleck(S.x+c*lx+s*lz,S.z-s*lx+c*lz,8+rnd()*8,0.1+rnd()*0.16); }
   cargos.forEach(k=>{ if(Math.abs(k.x-camera.position.x)<500 && rnd()<dt*18){ fleck(k.x-k.dir*(k.len/2+rnd()*15),k.z+(rnd()-.5)*k.beam,8+rnd()*8,0.18+rnd()*0.25); } });
   // breaking crests and wall splash near the camera
   const cx=camera.position.x, cz=camera.position.z, tries=Math.floor(10*waveAmp);
   for(let i=0;i<tries;i++){ const r=8+rnd()*90, a=rnd()*6.283, x=cx+Math.cos(a)*r, z=cz+Math.sin(a)*r; const ld=landD(x,z);
     if(ld>-6 && ld<0){ for(let k=0;k<7;k++) fleck(x+(rnd()-.5)*3,z+(rnd()-.5)*3,4+rnd()*6,0.12+rnd()*0.2); continue; }
     if(ld<0 && waveH(x,z,t,6)>0.62*SUMA*waveAmp*waveEnv(x,z,t)){ for(let k=0;k<9;k++) fleck(x+(rnd()-.5)*3,z+(rnd()-.5)*3,5+rnd()*7,0.12+rnd()*0.22); } }
-  const cur=currentAt(cx);
+  const cur=currentAt(cx), half=(flk.tick=(flk.tick|0)+1)&1;   // heights are refreshed for half the flecks each frame, alternately
   for(let i=0;i<FL_N;i++){
     if(flk.life[i]<=0){ flk.aA[i]=0; flk.aS[i]=0; continue; }
     flk.life[i]-=dt; const k=i*3, x=flk.pos[k], z=flk.pos[k+2];
     flk.pos[k]=x+(cur+Math.sin(t*1.3+flk.ph[i])*0.12)*dt; flk.pos[k+2]=z+Math.cos(t*1.1+flk.ph[i])*0.12*dt;
-    flk.pos[k+1]=waveH(flk.pos[k],flk.pos[k+2],t,6)+0.06;
+    if((i&1)===half) flk.pos[k+1]=waveH(flk.pos[k],flk.pos[k+2],t,6,flk.sh[i])+0.06;
     const f=flk.life[i]/flk.max[i]; flk.aA[i]=Math.min(1,f*4)*Math.pow(f,0.35); flk.aS[i]=flk.size[i]*(1.25-0.25*f);
   }
   flGeo.attributes.position.needsUpdate=flGeo.attributes.aSize.needsUpdate=flGeo.attributes.aAlpha.needsUpdate=true;
 }
 /* ============================================================
    Marine life (random): moon jellyfish drifting at the surface,
-   leaping mullet-like fish, dolphin pods, and a surfacing whale.
+   leaping mullet-like fish and dolphin pods.
    ============================================================ */
-const LIFE={ jelly:[], events:[], tFish:3, tDolph:18+rnd()*20, tWhale:55+rnd()*50 };
+const LIFE={ jelly:[], events:[], tFish:3, tDolph:18+rnd()*20 };
 function mkMesh(parts,mat){ const g=new THREE.Group(); parts.forEach(p=>g.add(p)); mergeGroup(g); const inner=new THREE.Group(); inner.add(g); inner.visible=false; inner.rotation.order='YZX'; scene.add(inner); return inner; }
 function ellipsoid(len,rad,col,x){ const m=new THREE.Mesh(new THREE.SphereGeometry(1,20,12),col); m.scale.set(len/2,rad,rad); m.position.x=x||0; return m; }
 function finTri(a,b,c,mat){ const g=new THREE.BufferGeometry(); g.setAttribute('position',new THREE.Float32BufferAttribute([...a,...b,...c],3)); g.computeVertexNormals(); return new THREE.Mesh(g,mat); }
 const dolphinMat=new THREE.MeshStandardMaterial({color:lc('#6d7d88'),roughness:.35,metalness:.1,side:THREE.DoubleSide});
 const bellyMat=new THREE.MeshStandardMaterial({color:lc('#c9d2d6'),roughness:.4});
-const whaleMat=new THREE.MeshStandardMaterial({color:lc('#2d3338'),roughness:.45,side:THREE.DoubleSide});
 const fishMat=new THREE.MeshStandardMaterial({color:lc('#b8c4cc'),roughness:.2,metalness:.6,side:THREE.DoubleSide});
 function buildDolphin(){ const parts=[ellipsoid(2.3,0.36,dolphinMat,0), ellipsoid(1.7,0.28,bellyMat,0.05)]; parts[1].position.y=-0.1;
   const beak=new THREE.Mesh(new THREE.ConeGeometry(0.1,0.45,10),dolphinMat); beak.rotation.z=-Math.PI/2; beak.position.set(1.28,-0.06,0); parts.push(beak);
@@ -213,14 +230,8 @@ function buildDolphin(){ const parts=[ellipsoid(2.3,0.36,dolphinMat,0), ellipsoi
   parts.push(finTri([0.5,-0.2,0.25],[0.2,-0.3,0.55],[0.25,-0.2,0.2],dolphinMat), finTri([0.5,-0.2,-0.25],[0.2,-0.3,-0.55],[0.25,-0.2,-0.2],dolphinMat));
   return mkMesh(parts); }
 function buildFish(){ const parts=[ellipsoid(0.5,0.08,fishMat,0)]; parts.push(finTri([-0.22,0,0],[-0.36,0.1,0],[-0.36,-0.1,0],fishMat)); const g=mkMesh(parts); return g; }
-function buildWhale(){ const parts=[ellipsoid(12,1.5,whaleMat,0)]; parts[0].scale.y=1.3;
-  parts.push(finTri([-2.2,1.6,0],[-3.4,1.5,0],[-3.3,2.3,0],whaleMat));
-  parts.push(finTri([-5.4,0,0],[-6.9,0.05,2.0],[-6.2,0,0],whaleMat), finTri([-5.4,0,0],[-6.9,0.05,-2.0],[-6.2,0,0],whaleMat));
-  parts.push(finTri([-6.2,0,0],[-6.9,0.05,2.0],[-7.1,0,0.3],whaleMat), finTri([-6.2,0,0],[-6.9,0.05,-2.0],[-7.1,0,-0.3],whaleMat));
-  parts.push(finTri([2,-0.8,1.1],[0.4,-1.1,2.6],[0.9,-0.9,1.0],whaleMat), finTri([2,-0.8,-1.1],[0.4,-1.1,-2.6],[0.9,-0.9,-1.0],whaleMat));
-  return mkMesh(parts); }
-const POOL={ dolphin:[...Array(6)].map(buildDolphin), fish:[...Array(10)].map(buildFish), whale:buildWhale() };
-POOL.dolphin.concat(POOL.fish,[POOL.whale]).forEach(m=>m.traverse(o=>{ if(o.isMesh) o.castShadow=true; }));
+const POOL={ dolphin:[...Array(6)].map(buildDolphin), fish:[...Array(10)].map(buildFish) };
+POOL.dolphin.concat(POOL.fish).forEach(m=>m.traverse(o=>{ if(o.isMesh) o.castShadow=true; }));
 // moon jellyfish
 const jellyTex=canvasTex(128,128,(g,w,h)=>{ g.fillStyle='rgba(240,236,255,0.55)'; g.beginPath(); g.arc(64,64,62,0,6.283); g.fill();
   g.strokeStyle='rgba(255,200,230,0.95)'; g.lineWidth=7; for(let i=0;i<4;i++){ const a=i*Math.PI/2+0.78; g.beginPath(); g.arc(64+Math.cos(a)*22,64+Math.sin(a)*22,12,0,6.283); g.stroke(); }
@@ -246,13 +257,11 @@ function spawnDolphins(){ const p=randomWaterSpot(35,160,15); if(!p) return; con
   for(let i=0;i<n;i++){ const m=POOL.dolphin[i]; if(LIFE.events.some(e=>e.mesh===m)) continue; const ox=(rnd()-.5)*8, oz=(rnd()-.5)*8;
     for(let j=0;j<3;j++){ const adv=j*9+i*1.5; jumpEvent(m,p[0]+ox+f[0]*adv,p[1]+oz+f[1]*adv,yaw+(rnd()-.5)*0.2,4.2+rnd(),1.1+rnd()*0.9,1.2,1.25+rnd()*0.25,i*0.45+j*2.3+rnd()*0.3,true); } }
   toast('イルカの群れが現れました 🐬','ok'); }
-function spawnWhale(){ if(LIFE.events.some(e=>e.kind==='whale')) return; const p=randomWaterSpot(110,380,70); if(!p) return;
-  LIFE.events.push({kind:'whale',mesh:POOL.whale,x:p[0],z:p[1],yaw:rnd()*6.283,t0:game.simT,dur:17,blown:false,s1:false,s2:false}); toast('クジラが浮上しています 🐋','ok'); }
 function updateLife(dt,t){
+  if(STAGE.life===false) return;   // no dolphins or jellyfish among the ice or up a jungle river
   // spawning timers
   LIFE.tFish-=dt; if(LIFE.tFish<=0){ spawnFish(); LIFE.tFish=2.5+rnd()*6; }
   LIFE.tDolph-=dt; if(LIFE.tDolph<=0){ spawnDolphins(); LIFE.tDolph=35+rnd()*55; }
-  LIFE.tWhale-=dt; if(LIFE.tWhale<=0){ spawnWhale(); LIFE.tWhale=90+rnd()*120; }
   // jellyfish drift at the surface and pulse
   const night=U.uNight.value;
   for(const j of LIFE.jelly){
@@ -268,21 +277,12 @@ function updateLife(dt,t){
     if(u<0){ continue; }
     if(u>1){ m.visible=false; LIFE.events.splice(i,1); continue; }
     const f=[Math.cos(e.yaw),-Math.sin(e.yaw)];
-    if(e.kind==='jump'){
+    {
       const x=e.x+f[0]*e.len*u, z=e.z+f[1]*e.len*u, surf=waveH(x,z,t,6);
       const y=surf-e.depth+(e.h+e.depth)*Math.sin(Math.PI*u), dy=(e.h+e.depth)*Math.PI*Math.cos(Math.PI*u);
       m.visible=true; m.position.set(x,y,z); m.rotation.set(0,e.yaw,Math.atan2(dy,e.len)*0.95);
       if(!e.s1 && y>surf){ e.s1=true; splash(x,z,t,e.big?28:6,e.big); }
       if(!e.s2 && u>0.5 && y<surf){ e.s2=true; splash(x,z,t,e.big?40:8,e.big); }
-    } else {
-      const x=e.x+f[0]*38*u, z=e.z+f[1]*38*u, surf=waveH(x,z,t,6);
-      let y=surf-2.3+2.4*Math.sin(Math.PI*Math.min(1,u/0.72)*0.5+Math.PI*0.25), pitch=0.05*Math.cos(Math.PI*u*2);
-      if(u<0.2) y=surf-3.5+(u/0.2)*(3.5-2.3+2.4*Math.sin(Math.PI*0.25));
-      if(u>0.66){ const k=(u-0.66)/0.34; pitch=-0.75*Math.min(1,k*1.6); y=surf+0.2-3.2*k*k-1.0*k; }
-      m.visible=true; m.position.set(x,y,z); m.rotation.set(0,e.yaw,pitch);
-      if(!e.s1 && u>0.18){ e.s1=true; splash(x+f[0]*4,z+f[1]*4,t,30,true); }
-      if(!e.blown && u>0.3){ e.blown=true; const hx=x+f[0]*4.5, hz=z+f[1]*4.5; for(let k=0;k<220;k++) emit(hx+(rnd()-.5)*0.6,surf+0.8,hz+(rnd()-.5)*0.6,(rnd()-.5)*1.6,6+rnd()*6,(rnd()-.5)*1.6,1.4+rnd()*1.2,0.08+rnd()*0.35); sfx.splash(0.2,700,1.4,0.5); }
-      if(!e.s2 && u>0.9){ e.s2=true; splash(x-f[0]*6,z-f[1]*6,t,60,true); }
     }
   }
 }
@@ -327,7 +327,7 @@ function updateSmoke(dt,t){
 }
 
 function stepWorld(dt,t){
-  updateFlecks(dt,t); updateLife(dt,t); updateSmoke(dt,t);
+  updateFlecks(dt,t); updateLife(dt,t); updateSmoke(dt,t); updateRoute(dt,t); updateNature(dt,t);
   cargos.forEach(c=>{
     c.x += c.dir*c.spd*dt;
     if(c.x>4200) c.x=-4200; if(c.x<-4200) c.x=4200;
@@ -452,7 +452,11 @@ function updatePeople(dt,t){
     if(p.seg>=p.path.length-1){ p.done=true; if(p.hideAtEnd) p.g.visible=false; }
   }
 }
-const dock={ phase:'none', t:0, P:null, side:1, ropes:[makeRope(),makeRope(),makeRope()], pairs:[], ext:0, hold:0, contactKn:0, moorAng:0, moorAlong:0, result:false };
+/* The player works the gangway: once the lines are fast it waits to be lowered (phase 'plankWait'), and once everyone
+   is aboard it waits to be stowed ('stowWait'). G or the on-screen button gives the order. */
+function gangPrompt(label){ const b=$('#gangBtn'); b.hidden=!label; if(label) b.textContent=label+'（G）'; }
+function workGangway(){ if(dock.phase==='plankWait'||dock.phase==='stowWait') dock.go=true; }
+const dock={ go:false, phase:'none', t:0, P:null, side:1, ropes:[makeRope(),makeRope(),makeRope()], pairs:[], ext:0, hold:0, contactKn:0, moorAng:0, moorAlong:0, result:false };
 function shipWorld(v,side){ ferry.updateMatrixWorld(); return new THREE.Vector3(v.x,v.y,v.z*side).applyMatrix4(ferry.matrixWorld); }
 function ponWorld(P,v){ P.pon.updateMatrixWorld(); return v.clone().applyMatrix4(P.pon.matrixWorld); }
 function sideToward(P){ const lz=(P.x-S.x)*Math.sin(S.psi)+(P.pz-S.z)*Math.cos(S.psi); return lz>0?1:-1; }
@@ -532,8 +536,9 @@ function updateDock(dt,t){
     dock.ropes.forEach((r,i)=>{ const st=i*0.7, p=clamp((dock.t-st)/0.9,0,1); if(dock.t<st){ r.visible=false; return; }
       const [A,B]=ropeEnds(i); const E=A.clone().lerp(B,p); E.y+=Math.sin(p*Math.PI)*2.6; setRope(r,A,E,0.25*p); if(p>=1) landed++; });
     if(landed===3){ dock.phase='pull'; dock.t=0; sfx.fender(0.2); }
-  } else if(dock.phase==='pull'||dock.phase==='plank'||dock.phase==='disembark'||dock.phase==='moored'||dock.phase==='boarding'){
-    if(dock.phase==='pull'){ dock.hold=Math.min(1,0.5+dock.t*0.25); if(dock.t>2.8){ dock.phase='plank'; dock.t=0; toast('係留完了。渡し板を掛けます','ok'); } }
+  } else if(['pull','plankWait','plank','disembark','moored','boarding','stowWait'].includes(dock.phase)){
+    if(dock.phase==='pull'){ dock.hold=Math.min(1,0.5+dock.t*0.25); if(dock.t>2.8){ dock.phase='plankWait'; dock.go=false; toast('係留完了。G キーで渡し板を掛けてください','ok'); gangPrompt('渡し板を掛ける'); } }
+    if(dock.phase==='plankWait' && dock.go){ dock.go=false; dock.phase='plank'; dock.t=0; gangPrompt(''); toast('渡し板を掛けます','ok'); }
     if(dock.phase==='plank'){ dock.ext=clamp(dock.t/2.2,0,1); if(dock.t>2.4){ dock.phase='disembark'; dock.t=0;
         const {A,B,deck,rdoor,inside}=doorPoints(); const foot=new THREE.Vector3(P.gx,P.pon.position.y+1.25,P.pz-P.dir*3.4), top=new THREE.Vector3(P.gx,3.4,P.shore-P.dir*1.5), away=new THREE.Vector3(P.gx+(rnd()-.5)*6,3.4,P.shore-P.dir*14);
         people.slice(5,11).forEach((p,i)=>{ p.hideAtEnd=true; walk(p,[inside.clone(),rdoor.clone(),deck.clone(),A.clone(),B.clone(),foot.clone().add(new THREE.Vector3((i%2)*0.6-0.3,0,0)),top.clone(),away.clone().add(new THREE.Vector3(i*0.8,0,0))],0.4+i*1.1); });
@@ -541,7 +546,8 @@ function updateDock(dt,t){
     if(dock.phase==='disembark' && dock.t>5.5 && !dock.result){ dock.result=true; showResult(); dock.phase='moored'; }
     const sag = dock.phase==='pull' ? lerp(0.9,0.18,clamp(dock.t/2.8,0,1)) : 0.18;
     dock.ropes.forEach((r,i)=>{ const [A,B]=ropeEnds(i); setRope(r,A,B,sag+0.04*Math.sin(t*1.3+i)); });
-    if(dock.phase==='boarding'){ const all=(dock.boarders||[]).every(p=>p.done); if((all && dock.t>1.5)||dock.t>12){ (dock.boarders||[]).forEach(p=>{ p.done=true; p.g.visible=false; }); dock.phase='plankIn'; dock.t=0; toast('渡し板を収納します','ok'); } }
+    if(dock.phase==='boarding'){ const all=(dock.boarders||[]).every(p=>p.done); if((all && dock.t>1.5)||dock.t>12){ (dock.boarders||[]).forEach(p=>{ p.done=true; p.g.visible=false; }); dock.phase='stowWait'; dock.go=false; toast('乗船完了。G キーで渡し板を格納してください','ok'); gangPrompt('渡し板を格納する'); } }
+    if(dock.phase==='stowWait' && dock.go){ dock.go=false; dock.phase='plankIn'; dock.t=0; gangPrompt(''); toast('渡し板を格納します','ok'); }
   } 
   if(dock.phase==='plankIn'){ dock.ext=clamp(1-dock.t/1.6,0,1); dock.ropes.forEach((r,i)=>{ const [A,B]=ropeEnds(i); setRope(r,A,B,0.2); }); if(dock.t>1.7){ dock.ext=0; updatePlank(); dock.phase='castoff'; dock.t=0; } }
   if(dock.phase==='castoff'){
@@ -565,6 +571,7 @@ function checkDock(){
     else if(ang>12) toast('船体を桟橋と平行にしてください（低速では A/D でその場回頭）');
     else if(Math.abs(along)>8) toast(along<0?'もう少し前へ':'行き過ぎです。少し後進を');
     else if(gap>1.0) toast('Q/E の平行移動でゆっくり桟橋に寄せてください'); }
+  if(routeBlocksDocking(dist)) return;
   if(Math.abs(along)<8 && gap<1.0 && sog<0.62 && ang<10 && Math.abs(S.throttle)<0.35){ const c=Math.cos(S.psi), sn=Math.sin(S.psi); const toward=Math.max(0,(-sn*S.u+c*S.v)*Math.sign(P.pz-S.z)); dock.contactKn=Math.max(dock.contactKn,toward*1.944); beginMooring(P,along,ang); }
 }
 function fmtTime(s){ const m=Math.floor(s/60), r=Math.floor(s%60); return String(m).padStart(2,'0')+':'+String(r).padStart(2,'0'); }
@@ -582,7 +589,7 @@ function showResult(){
   $('#result').hidden=false; $('#next').focus();
 }
 function startLeg(){
-  game.hits=0; game.departed=false; game.msgT=0; game.elapsed=0; dock.contactKn=0; dock.result=false;
+  game.hits=0; game.departed=false; game.msgT=0; game.elapsed=0; dock.contactKn=0; dock.result=false; resetRoute();
   $('#rFrom').textContent=PIERS[game.from].name; $('#rTo').textContent=PIERS[game.to].name;
   beginDeparture();
 }

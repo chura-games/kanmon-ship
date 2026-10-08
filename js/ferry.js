@@ -30,13 +30,15 @@ function buildFerry(){
   const lm=navLight(0xffffff,2.6); lm.position.set(mastX,mastY+3.2,0); ship.add(lm);
   const lt=navLight(0xffffff,2.2); lt.position.set(-11.9,F.deckY(0)+1.2,0); ship.add(lt);
   // everything casts and receives shadows except glass; glass is drawn after the water so the sea shows through the cabin
-  ship.traverse(o=>{ if(!o.isMesh) return; const clear=[].concat(o.material).some(m=>m.transparent); o.castShadow=!clear; o.receiveShadow=true; if(clear) o.renderOrder=2; });
+  // the model's glass is dark from outside; from the helm and cabin views it is thinned so the sea is not blacked out (setCam in js/ui.js)
+  const glassMats=new Map();
+  ship.traverse(o=>{ if(!o.isMesh) return; const mats=[].concat(o.material).filter(m=>m.transparent); mats.forEach(m=>glassMats.set(m,m.opacity)); const clear=mats.length>0; o.castShadow=!clear; o.receiveShadow=true; if(clear) o.renderOrder=2; });
   const flagGeo=mesh('flag').geometry, ensGeo=mesh('ensign').geometry;
   // the ship's own folding gangways (one per side, hinged at the deck edge): stowed upright, lowered onto the pontoon when berthed
   const gangway=['gangway_hinge_stbd','gangway_hinge_port'].every(n=>MODELS.has(ship,n)) ? {1:part('gangway_hinge_stbd'),[-1]:part('gangway_hinge_port')} : null;
   let gangLen=0, door=new THREE.Vector3(-10.35,F.deckY(sOf(-10.35))+0.05,3.0);
   if(gangway){ ship.updateMatrixWorld(true); const g=gangway[1], bb=new THREE.Box3().setFromObject(g); gangLen=bb.max.y-g.position.y; door=g.position.clone(); }   // stowed it stands on end, so its height above the hinge is its reach
-  ship.userData={gangway,gangLen,radar:part('radar'),flagGeo,flagBase:flagGeo.attributes.position.array.slice(),ensGeo,ensBase:ensGeo.attributes.position.array.slice(),
+  ship.userData={glassMats,gangway,gangLen,radar:part('radar'),flagGeo,flagBase:flagGeo.attributes.position.array.slice(),ensGeo,ensBase:ensGeo.attributes.position.array.slice(),
     door, deckPt:new THREE.Vector3(-10.1,F.deckY(sOf(-10.1))+0.03,1.3), rdoor:new THREE.Vector3(-9.1,F.deckY(sOf(-9.1))+0.03,0), inside:new THREE.Vector3(-7.9,F.deckY(sOf(-7.9))+0.03,0.2),
     cleats:{bow:MODELS.has(ship,'cleat_s')?part('cleat_s').position.clone().add(new THREE.Vector3(0,0.1,0)):new THREE.Vector3(8.6,F.deckY(sOf(8.6))+0.3,1.5),stern:new THREE.Vector3(-11.2,F.deckY(0.05)+0.3,2.5)}};
   return ship;
@@ -101,7 +103,12 @@ let cabinSafe=true;
   const mkScreen=(name,cw,ch)=>{ const c=document.createElement('canvas'); c.width=cw; c.height=ch; const tx=new THREE.CanvasTexture(c); tx.encoding=THREE.sRGBEncoding;
     const m=mesh(name); m.material=new THREE.MeshBasicMaterial({map:tx,toneMapped:false}); return {c,g:c.getContext('2d'),tx,m}; };
   IN.radar=mkScreen('screen_radar',256,196); IN.chart=mkScreen('screen_chart',256,196); IN.gauge=mkScreen('screen_gauge',320,140);
-  IN.wheel=part('helm_wheel'); IN.levers=[part('helm_lever_1'),part('helm_lever_2')]; IN.joy=part('helm_joystick');
+  // The controls in the model are not all modelled around their own origins. Turn each about where it really is:
+  // the wheel about its centre, the levers and the joystick about their feet.
+  const pivot=(name,atFoot)=>{ const n=part(name); ferry.updateMatrixWorld(true);
+    const bb=new THREE.Box3().setFromObject(n), c=bb.getCenter(new THREE.Vector3()); if(atFoot) c.y=bb.min.y; n.worldToLocal(c);
+    const p=new THREE.Group(), kids=n.children.slice(); p.position.copy(c); n.add(p); kids.forEach(k=>{ p.add(k); k.position.sub(c); }); return p; };
+  IN.wheel=pivot('helm_wheel'); IN.levers=[pivot('helm_lever_1',true),pivot('helm_lever_2',true)]; IN.joy=pivot('helm_joystick',true);
   // right mirror (outside, starboard) — shows a live mirror image
   IN.mirrorRT=new THREE.WebGLRenderTarget(512,340); IN.mirrorRT.texture.repeat.x=-1; IN.mirrorRT.texture.offset.x=1; IN.mirrorRT.texture.encoding=THREE.LinearEncoding;
   // the model may carry a `mirror` with a `mirror_glass`; without one the view is taken from where a mirror would hang

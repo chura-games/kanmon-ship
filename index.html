@@ -30,6 +30,7 @@
     <button class="tbtn" id="bSea">波 <span id="vSea">普通</span></button>
     <button class="tbtn" id="bTide">潮流 <span id="vTide">あり</span></button>
     <button class="tbtn" id="bSnd">音 <span id="vSnd">オフ</span></button>
+    <button class="tbtn" id="bAuto">自動運転 <span id="vAuto">オフ</span></button>
     <button class="tbtn" id="bHorn">汽笛 <span>H</span></button>
     <button class="tbtn" id="bQ">画質 <span id="vQ">自動</span></button>
     <div class="vol">
@@ -37,14 +38,14 @@
       <label>エンジン<input type="range" id="volEng" min="0" max="100" value="55"></label>
       <label>波・水の音<input type="range" id="volEnv" min="0" max="100" value="80"></label>
     </div>
-    <div class="mhint">C / 1〜5 視点　H 汽笛　Esc 閉じる</div>
+    <div class="mhint">C / 1〜6 視点　H 汽笛　Esc 閉じる</div>
   </div>
   <div id="gauge" class="panel">
     <div><span class="spd num" id="spd">0.0</span><span class="unit">kn</span></div>
     <div class="col">針路<b class="num" id="hdg">090°</b></div>
     <div class="col">潮流<b class="num" id="cur">—</b></div>
   </div>
-  <div id="keys">W/S 速力　A/D 舵　Q/E 平行移動　X 停止　C / 1〜5 視点　H 汽笛　ドラッグで見回す</div>
+  <div id="keys">W/S 速力　A/D 舵　Q/E 平行移動　X 停止　C / 1〜6 視点　H 汽笛　ドラッグで見回す</div>
   <div id="lever" class="panel" aria-label="速力レバー">
     <div class="ttl">速力</div>
     <div class="rail"><div class="fill" id="lvFill"></div><div class="knob" id="lvKnob"></div></div>
@@ -67,22 +68,38 @@
   </div>
   <div id="pip" hidden><span>右舷ミラー</span></div>
   <div id="mirrorTag" class="panel" hidden>右舷ミラー（鏡像）— 後方を確認</div>
+  <button id="gangBtn" class="panel" hidden></button>
   <div id="toast" class="panel"></div>
 </div>
 
-<div class="overlay" id="intro">
+<div class="overlay" id="select" hidden>
+  <div class="card panel">
+    <h1><small>関門汽船 運転シミュレーター</small>コースを選んでください</h1>
+    <button class="course" data-stage="kanmon"><b>関門海峡編</b><span>唐戸 ⇄ 門司港　大型船と潮流をかわして対岸の桟橋へ</span></button>
+    <button class="course" data-stage="naruto"><b>鳴門海峡編</b><span>亀浦 ⇄ 福良　渦潮の間のゲートを抜ける。巻き込まれると浸水・沈没</span></button>
+    <button class="course" data-stage="okinawa"><b>沖縄 クジラウォッチ</b><span>泊 ⇄ 座間味　慶良間の海でザトウクジラを3か所で観察</span></button>
+    <button class="course" data-stage="hokkaido"><b>北海道 流氷・ヒグマウォッチ</b><span>網走 ⇄ ウトロ　流氷の間の水路を抜け、岸のヒグマを観察</span></button>
+    <button class="course" data-stage="jungle"><b>ジャングルクルーズ</b><span>密林の川を下り、ゾウ・カバ・ワニ・遺跡を観察</span></button>
+    <p>選んだコースだけを読み込みます。</p>
+  </div>
+</div>
+
+<div class="overlay" id="intro" hidden>
   <div class="card panel">
     <h1><small>関門海峡 連絡船</small>唐戸 ⇄ 門司港<br>運転シミュレーター</h1>
-    <p>下関・唐戸桟橋から対岸の門司港桟橋まで、約1.3kmの海峡を渡ります。航路を横切る大型船と、刻々と向きを変える潮流に注意して、ゆっくり桟橋に横付けしてください。</p>
+    <button class="stagebtn" id="stageBtn">コース選択に戻る</button>
+    <p id="introText">下関・唐戸桟橋から対岸の門司港桟橋まで、約1.3kmの海峡を渡ります。航路を横切る大型船と、刻々と向きを変える潮流に注意して、ゆっくり桟橋に横付けしてください。</p>
     <div class="ctrls">
       <kbd>W / S</kbd><div>速力レバー（前進・後進）</div>
       <kbd>A / D</kbd><div>舵を左右に切る（離すと中央へ戻る）</div>
       <kbd>Q / E</kbd><div>スラスターで左右へ平行移動（低速時・横付けに）</div>
       <kbd>X</kbd><div>機関停止</div>
-      <kbd>C / 1〜5</kbd><div>視点：追従・操舵席・右ミラー・客室・俯瞰</div>
+      <kbd>C / 1〜6</kbd><div>視点：追従・操舵席・右ミラー・客室・俯瞰・お客様（岸や船内を歩く。F で乗り降り）</div>
+      <kbd>G</kbd><div>渡し板を掛ける・格納する（係留中に案内が出ます）</div>
+      <kbd>P</kbd><div>自動運転の入・切（操船すると解除）</div>
       <kbd>H</kbd><div>汽笛</div>
     </div>
-    <p>着岸は本物と同じ手順です。桟橋の防舷材にそっと横付けし（船速 1.2kn 未満・桟橋と平行 ±10°・間隔 1m 以内）、船が止まると係留索が取られ、渡し板が掛かって乗客が下船します。速すぎる接舷は「接触」になります。スマホでは左のレバーと右の舵スライダーで操船できます。</p>
+    <p>着岸は本物と同じ手順です。桟橋の防舷材にそっと横付けし（船速 1.2kn 未満・桟橋と平行 ±10°・間隔 1m 以内）、船が止まると係留索が取られます。G キーで渡し板を掛けると乗客が下船し、出航前も乗船が済んだら G キーで格納します。速すぎる接舷は「接触」になります。スマホでは左のレバーと右の舵スライダーで操船できます。</p>
     <button class="cta" id="start">乗船を始めて出航する</button>
   </div>
 </div>
@@ -100,6 +117,16 @@
       <dt>この航路のベスト</dt><dd class="num" id="rsBest"></dd>
     </dl>
     <button class="cta" id="next">折り返し便を出航する</button>
+  </div>
+</div>
+
+<div class="overlay" id="sunk" hidden>
+  <div class="card panel">
+    <div class="rank">✕</div>
+    <h1><small id="sunkRoute"></small>沈没しました</h1>
+    <p id="sunkText"></p>
+    <p>渦の縁より内側にいるあいだ浸水が進みます。渦が弱まるタイミングを見て、ゲートの間を全速で抜けてください。</p>
+    <button class="cta" id="retry">同じ便をやり直す</button>
   </div>
 </div>
 

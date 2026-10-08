@@ -18,7 +18,7 @@ const wakeMat = mode => new THREE.ShaderMaterial({
       float fresh=pow(1.0-vAge,1.6);
       float m=n*0.8+n2*0.35+fresh*0.55-0.25*edge;
       float lace=texture2D(tFoam,vW.xz*0.12).r*0.6+texture2D(tFoam,vW.xz*0.31+0.2).r*0.4;
-      float persist=0.46+0.54*fresh;
+      float persist=0.6+0.4*fresh;
       float amt=clamp(persist*1.1*(0.55+0.6*n)-0.28*edge,0.0,1.0)*smoothstep(1.0,0.7,vAge);
       a=body*vStr*(smoothstep(1.0-amt,1.0-amt+0.18,lace)*min(1.0,amt*1.8)+texture2D(tFoam,vW.xz*0.6).g*amt*0.45) + body*fresh*fresh*vStr*0.3 + body*vStr*0.17*smoothstep(1.0,0.5,vAge);
     } else {
@@ -59,7 +59,7 @@ class Wake{
     for(const k of ['position','aAge','aStr']) this.geo.attributes[k].needsUpdate=true;
   }
 }
-const wakeT=new Wake(420,0,SHIP_B*0.40,0.085,150);
+const wakeT=new Wake(640,0,SHIP_B*0.40,0.085,210);
 const wakeK=new Wake(140,1,SHIP_B*0.5,0.34,30); wakeK.mesh.visible=false;
 cargos.forEach(c=>{ c.wake=new Wake(160,0,c.beam*0.45,0.05,90); c.wakeK=new Wake(120,1,c.beam*0.5,0.3,45); c.wakeK.mesh.visible=false; });
 
@@ -75,7 +75,7 @@ spGeo.setAttribute('aSize',new THREE.BufferAttribute(spray.aSize,1));
 spGeo.setAttribute('aAlpha',new THREE.BufferAttribute(spray.aAlpha,1));
 const spMat=new THREE.ShaderMaterial({ uniforms:U, transparent:true, depthWrite:false, fog:false,
   vertexShader:`uniform float uScale; attribute float aSize; attribute float aAlpha; varying float vA;
-    void main(){ vec4 mv=modelViewMatrix*vec4(position,1.0); float ps=aSize*uScale/max(-mv.z,0.5); gl_PointSize=clamp(ps,1.3,14.0); vA=aAlpha*clamp(ps/1.3,0.25,1.0); gl_Position=projectionMatrix*mv; }`,
+    void main(){ vec4 mv=modelViewMatrix*vec4(position,1.0); float ps=aSize*uScale/max(-mv.z,0.5); gl_PointSize=clamp(ps,1.3,22.0); vA=aAlpha*clamp(ps/1.3,0.25,1.0); gl_Position=projectionMatrix*mv; }`,
   fragmentShader: COMMON + `varying float vA;
     void main(){ if(vA<=0.001) discard; vec2 c=gl_PointCoord-0.5; float r=length(c)*2.0; if(r>1.0) discard;
       float a=(1.0-smoothstep(0.55,1.0,r))*vA;
@@ -99,8 +99,8 @@ function updateSpray(dt,t){
     spray.vel[k+1]-=9.8*dt; const drag=1-dt*0.9; spray.vel[k]*=drag; spray.vel[k+1]*=(1-dt*0.3); spray.vel[k+2]*=drag;
     spray.pos[k]+=spray.vel[k]*dt; spray.pos[k+1]+=spray.vel[k+1]*dt; spray.pos[k+2]+=spray.vel[k+2]*dt;
     spray.life[i]-=dt;
-    if(spray.vel[k+1]<0 && spray.pos[k+1]<waveH(spray.pos[k],spray.pos[k+2],t,3)){
-      spray.life[i]=0; if(rnd()<0.25) fleck(spray.pos[k]+(rnd()-.5)*0.6,spray.pos[k+2]+(rnd()-.5)*0.6,3+rnd()*6,0.1+rnd()*0.18);
+    if(spray.vel[k+1]<0 && spray.pos[k+1]<waveH(spray.pos[k],spray.pos[k+2],t,3,1)){
+      spray.life[i]=0; if(rnd()<0.05) fleck(spray.pos[k]+(rnd()-.5)*0.6,spray.pos[k+2]+(rnd()-.5)*0.6,7+rnd()*8,0.1+rnd()*0.18);
       if(rippleCool<=0 && spray.size[i]>0.7){ addRipple(spray.pos[k],spray.pos[k+2],0.35+rnd()*0.3,t); rippleCool=0.07; }
     }
     const f=clamp(spray.life[i]/spray.max[i],0,1);

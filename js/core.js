@@ -20,26 +20,29 @@ try{ const v=JSON.parse(localStorage.getItem('kanmon-vol')||'null'); if(v){ MAST
 const store = { get(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }, set(k,v){ try{ localStorage.setItem(k,v); }catch(e){} } };
 
 /* ============================================================
-   Geography — the Kanmon Strait (x: east, z: south, 1 unit = 1 m)
-   North shore: Shimonoseki (Honshu) / South shore: Moji (Kyushu)
+   Geography — a strait running east-west (x: east, z: south, 1 unit = 1 m), shaped by js/stage.js.
+   It narrows where the bridge crosses. One shore formula is written out for both the CPU and the shaders.
    ============================================================ */
-const BRIDGE_X = 2300;
+const BRIDGE_X = STAGE.bridgeX;
 const bumpX = x => { const q=(x-BRIDGE_X)/700; return Math.exp(-q*q); };
 const plat = (x,a,b,e) => smooth(a-e,a+e,x)*(1-smooth(b-e,b+e,x));
-const southZ0 = x =>  630 + 30*Math.sin(x*.0033+1) + 18*Math.sin(x*.009)  - 290*bumpX(x);
-// Karato: the aquarium (海響館) headland closes the basin on the west, the market (唐戸市場) juts out on the east
-const northZ = x => -620 + 35*Math.sin(x*.0041) + 20*Math.sin(x*.011+2) + 300*bumpX(x) + 175*plat(x,-760,-250,45) + 55*plat(x,70,230,35) + 45*plat(x,-1500,-1150,20) + 60*plat(x,450,700,25) + 40*plat(x,920,1150,25) - 30*plat(x,1300,1420,18);
-// Moji-ko: the retro inner basin (第一船だまり) crossed by the Blue Wing Moji drawbridge
-const southZ = x => southZ0(x) + 90*plat(x,340,460,22) - 62*plat(x,-420,-120,25) + 40*plat(x,-720,-560,20) - 45*plat(x,650,900,25) - 35*plat(x,1080,1280,25);
+const glNum = n => Number.isInteger(n) ? n+'.0' : String(n);
+function shoreExpr(sp,plats){ let e=glNum(sp.z0); for(const [a,f,p] of sp.sin) e+='+'+glNum(a)+'*sin(x*'+glNum(f)+'+'+glNum(p)+')'; e+='+'+glNum(sp.bump)+'*bumpX(x)';
+  if(plats) for(const [a,x0,x1,w] of sp.plats) e+='+'+glNum(a)+'*plat(x,'+glNum(x0)+','+glNum(x1)+','+glNum(w)+')'; return e; }
+const shoreFn = e => new Function('bumpX','plat','sin','return x=>'+e)(bumpX,plat,Math.sin);
+const southZ0 = shoreFn(shoreExpr(STAGE.south,false));   // the south shore without its inlets and headlands
+const northZ = shoreFn(shoreExpr(STAGE.north,true));
+const southZ = shoreFn(shoreExpr(STAGE.south,true));
 function landD(x,z){ const n=northZ(x), s=southZ(x); if(z<n) return n-z; if(z>s) return z-s; return -Math.min(z-n, s-z); }
 function terrainH(x,z){
   const d = landD(x,z);
   if(d<0) return Math.max(-22, d*0.65-2.0);
-  let h = 3.2 + (fbm2(x*.02,z*.02)-.5)*0.8*smooth(30,120,d);
+  // built-up shores stand on a 3.2 m quay; natural ones (STAGE.wild) rise from the water as a beach, except around the piers
+  let quay = 3.2;
+  if(STAGE.wild){ let k=0; for(const p of STAGE.piers) k=Math.max(k,smooth(330,260,Math.abs(x-p.x))); quay=lerp(Math.min(3.2,0.35+d*0.12),3.2,k); }
+  let h = quay + (fbm2(x*.02,z*.02)-.5)*0.8*smooth(30,120,d);
   h += smooth(170,720,d)*(40+190*fbm2(x*.0011+3.3, z*.0011-7.1));
-  const gH = Math.exp(-((x-2700)**2+(z+1200)**2)/(2*420*420));   // 火の山
-  const gM = Math.exp(-((x-1850)**2+(z-1180)**2)/(2*430*430));   // 和布刈・古城山
-  h += (230*gH + 175*gM)*smooth(60,320,d);
+  for(const [hx,hz,hw,hh] of STAGE.hills) h += hh*Math.exp(-((x-hx)**2+(z-hz)**2)/(2*hw*hw))*smooth(60,320,d);
   return h;
 }
 
@@ -59,20 +62,27 @@ function gridSpacingAt(D){ const t=clamp(D/1500,0,1); let lo=0,hi=1; for(let i=0
 WAVES.forEach(w=>{ let D=0; while(D<3000 && gridSpacingAt(D)<w.L/3.2) D+=5; w.vEnd=D; w.vStart=D*0.6; });
 let waveAmp = 1.0;
 function waveEnv(x,z,t){ return 1+0.32*Math.sin(0.01396*(0.95*x+0.31*z)-0.0628*t+1.3)+0.22*Math.sin(0.00898*(0.80*x-0.60*z)-0.0404*t+4.1); }
-function waveH(x,z,t,n){ n=n||NW; const env=waveEnv(x,z,t); let h=0; for(let i=0;i<n;i++){ const w=WAVES[i]; h += w.A*waveAmp*(i<6?env:1)*Math.sin(w.k*(w.dx*x+w.dz*z) - w.w*t + w.ph); } return h; }
+/* harbours are sheltered: the sea dies down toward the shore (to 30% within 40 m of it, full strength 260 m out), so it doesn't wash over quays and pontoons */
+const shelter = d => 0.3+0.7*smooth(40,260,d);
+/* whirlpools (js/stage.js): w.s is the current strength 0..1, set every frame by js/route.js. Each pulls the surface down into a broad bowl with a steep throat. */
+const WHIRLS = STAGE.whirls.map(w=>Object.assign({s:0},w));
+function whirlDip(x,z){ let d=0; for(const w of WHIRLS){ const dx=x-w.x, dz=z-w.z, q=(dx*dx+dz*dz)/(w.R*w.R*0.64); if(q<9) d+=w.s*w.depth*(0.6*Math.exp(-q)+0.4*Math.exp(-q*8)); } return d; }
+/* sea height at a point. n: how many wave components (default all); sh: a known shelter factor, to skip working out the distance to shore */
+function waveH(x,z,t,n,sh){ n=n||NW; if(sh===undefined) sh=shelter(-landD(x,z)); const env=waveEnv(x,z,t)*sh; let h=0; for(let i=0;i<n;i++){ const w=WAVES[i]; h += w.A*waveAmp*(i<6?env:sh)*Math.sin(w.k*(w.dx*x+w.dz*z) - w.w*t + w.ph); } return WHIRLS.length ? h-whirlDip(x,z) : h; }
 function glslWaves(){
   const f = n => n.toFixed(6);
   const ENV='1.0+0.32*sin(0.01396*dot(vec2(0.95,0.31),p)-0.0628*uTime+1.3)+0.22*sin(0.00898*dot(vec2(0.80,-0.60),p)-0.0404*uTime+4.1)';
-  let s = `vec3 wavesV(vec2 p, float amp0, out vec3 nrm){ vec3 d=vec3(0.0); vec2 sl=vec2(0.0); float j=0.0; float D=distance(p,cameraPosition.xz); float f,c,sn,a,amp; float env=${ENV};\n`;
+  let s = WHIRLS.length ? `uniform vec4 uWhirl[${WHIRLS.length}]; uniform float uWhirlDepth[${WHIRLS.length}];\nfloat whirlDip(vec2 p){ float d=0.0; for(int i=0;i<${WHIRLS.length};i++){ vec4 w=uWhirl[i]; vec2 r=p-w.xy; float q=dot(r,r)/(w.z*w.z*0.64); if(q<9.0) d+=abs(w.w)*uWhirlDepth[i]*(0.6*exp(-q)+0.4*exp(-q*8.0)); } return d; }\n` : '';
+  s += `float shelter(vec2 p){ return 0.3+0.7*smoothstep(40.0,260.0,-landD(p)); }\nvec3 wavesV(vec2 p, float amp0, out vec3 nrm){ amp0*=shelter(p); vec3 d=vec3(0.0); vec2 sl=vec2(0.0); float j=0.0; float D=distance(p,cameraPosition.xz); float f,c,sn,a,amp; float env=${ENV};\n`;
   for(const w of WAVES){ s+=` amp=amp0${WAVES.indexOf(w)<6?'*env':''};`;
     const body=` f=${f(w.k)}*dot(vec2(${f(w.dx)},${f(w.dz)}),p)-${f(w.w)}*uTime+${f(w.ph)}; c=cos(f); sn=sin(f); d.x+=${f(w.dx*w.A)}*a*c; d.y+=${f(w.A)}*a*sn; d.z+=${f(w.dz*w.A)}*a*c; sl+=vec2(${f(w.dx*w.s)},${f(w.dz*w.s)})*a*c; j+=${f(w.s)}*a*sn;`;
     s += w.vEnd>=3000 ? ` a=amp;${body}\n` : ` if(D<${f(w.vEnd)}){ a=amp*(1.0-smoothstep(${f(w.vStart)},${f(w.vEnd)},D));${body} }\n`;
   }
-  s += ` nrm=vec3(-sl.x,1.0-j,-sl.y); return d; }\n`;
+  s += ` nrm=vec3(-sl.x,1.0-j,-sl.y);${WHIRLS.length?' d.y-=whirlDip(p);':''} return d; }\n`;
   s += `float foamTrail(vec2 p){ float env=${ENV}; float tr=0.0, ph;\n`;
   WAVES.slice(0,5).forEach(w=>{ s+=` ph=fract((${f(w.k)}*dot(vec2(${f(w.dx)},${f(w.dz)}),p)-${f(w.w)}*uTime+${f(w.ph)})/6.2831853-0.25); tr+=exp(-ph*7.0)*${f(w.s/0.046)};\n`; });
-  s += ` return tr*env*0.28; }\n`;
-  s += `vec2 wavesS(vec2 p, float amp0, float D){ vec2 sl=vec2(0.0); float f,a,amp; float env=${ENV};\n`;
+  s += ` return tr*env*0.28*shelter(p); }\n`;
+  s += `vec2 wavesS(vec2 p, float amp0, float D){ amp0*=shelter(p); vec2 sl=vec2(0.0); float f,a,amp; float env=${ENV};\n`;
   for(const w of WAVES){ const e=w.L*26, st=w.L*10;
     s += ` amp=amp0${WAVES.indexOf(w)<6?'*env':''}; if(D<${f(e)}){ a=amp*(1.0-smoothstep(${f(st)},${f(e)},D)); f=${f(w.k)}*dot(vec2(${f(w.dx)},${f(w.dz)}),p)-${f(w.w)}*uTime+${f(w.ph)}; sl+=vec2(${f(w.dx*w.s)},${f(w.dz*w.s)})*a*cos(f); }\n`; }
   return s + ` return sl; }\n`;
@@ -164,7 +174,8 @@ const U = {
   uSkyTop:{value:new THREE.Color()}, uSkyHor:{value:new THREE.Color()}, uFogColor:{value:new THREE.Color()},
   uFogDensity:{value:0.00022}, uNight:{value:0}, uCloudCol:{value:new THREE.Color(1,1,1)},
   uScale:{value:800},
-  uShip:{value:new THREE.Vector4(0,0,0,0)}, uShipDim:{value:new THREE.Vector2(26,6.6)},
+  uShip:{value:new THREE.Vector4(0,0,0,0)}, uShipDim:{value:new THREE.Vector2(26,6.6)}, uChurn:{value:0}, uWake:{value:new THREE.Vector2(0,1)},   // uChurn: 0..1, water thrashed by the jets while she gets under way
+  uWhirl:{value:WHIRLS.map(w=>new THREE.Vector4(w.x,w.z,w.R,0))}, uWhirlDepth:{value:WHIRLS.map(w=>w.depth)},
   uWL:{value:new Float32Array(26)}, uSlap:{value:new Float32Array(26)},   // ferry waterline: wetted half-width and wave impact at 13 stations, starboard then port
   uRipples:{value:Array.from({length:24},()=>new THREE.Vector4(0,0,-999,0))},
   uFlow:{value:new THREE.Vector2(0,0)}, tNoise:{value:TEX_NOISE}, tFoam:{value:TEX_FOAM}, tSlope:{value:TEX_SLOPE}, tRefl:{value:reflRT.texture}, uReflOn:{value:0}, uRes:{value:new THREE.Vector2(1,1)}
@@ -181,8 +192,8 @@ float vnoise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.0-2.0*f);
 float fbm(vec2 p){ float s=0.0, a=0.5; for(int i=0;i<4;i++){ s+=a*vnoise(p); p=p*2.03+vec2(1.7,9.2); a*=0.5; } return s/0.9375; }
 float bumpX(float x){ float q=(x-${BRIDGE_X.toFixed(1)})/700.0; return exp(-q*q); }
 float plat(float x,float a,float b,float e){ return smoothstep(a-e,a+e,x)*(1.0-smoothstep(b-e,b+e,x)); }
-float northZ(float x){ return -620.0+35.0*sin(x*0.0041)+20.0*sin(x*0.011+2.0)+300.0*bumpX(x)+175.0*plat(x,-760.0,-250.0,45.0)+55.0*plat(x,70.0,230.0,35.0)+45.0*plat(x,-1500.0,-1150.0,20.0)+60.0*plat(x,450.0,700.0,25.0)+40.0*plat(x,920.0,1150.0,25.0)-30.0*plat(x,1300.0,1420.0,18.0); }
-float southZ(float x){ return 630.0+30.0*sin(x*0.0033+1.0)+18.0*sin(x*0.009)-290.0*bumpX(x)+90.0*plat(x,340.0,460.0,22.0)-62.0*plat(x,-420.0,-120.0,25.0)+40.0*plat(x,-720.0,-560.0,20.0)-45.0*plat(x,650.0,900.0,25.0)-35.0*plat(x,1080.0,1280.0,25.0); }
+float northZ(float x){ return ${shoreExpr(STAGE.north,true)}; }
+float southZ(float x){ return ${shoreExpr(STAGE.south,true)}; }
 float landD(vec2 p){ float n=northZ(p.x); float s=southZ(p.x); if(p.y<n) return n-p.y; if(p.y>s) return p.y-s; return -min(p.y-n,s-p.y); }
 vec3 skyColor(vec3 d){
   float y=d.y;
@@ -193,13 +204,15 @@ vec3 skyColor(vec3 d){
   col+=vec3(0.35,0.18,0.08)*uNight*exp(-max(y,0.0)*25.0)*0.35;
   return col;
 }
-uniform vec4 uShip; uniform vec2 uShipDim;
+uniform vec4 uShip; uniform vec2 uShipDim; uniform vec2 uWake;
   float kelvin(vec2 p){
-    float U=uShip.w; if(U<0.6) return 0.0;
+    // The wavelength follows uWake.x, a slowly settling copy of the speed, and the pattern is faded (uWake.y) while the speed is still
+    // changing: tied to the instantaneous speed, the whole pattern astern would slide and flicker as she accelerates.
+    float U=uWake.x; if(U<0.6) return 0.0;
     vec2 f=vec2(cos(uShip.z),-sin(uShip.z)); vec2 sd=vec2(sin(uShip.z),cos(uShip.z));
     vec2 rel=p-uShip.xy;
     float a=-dot(rel,f)+uShipDim.x*0.5;
-    if(a<0.0||a>280.0) return 0.0;
+    if(a<0.0||a>460.0) return 0.0;
     float b=abs(dot(rel,sd));
     float k=9.81/(U*U);
     float w=a*0.354+uShipDim.y*0.5;
@@ -207,7 +220,7 @@ uniform vec4 uShip; uniform vec2 uShipDim;
     float trans=sin(k*a)*inside*0.35;
     float e=(b-w)/(2.0+a*0.06);
     float dv=sin(k*1.8*(a*0.82+b*0.57))*exp(-e*e)*0.9;
-    return (trans+dv)*exp(-a/150.0)*smoothstep(0.6,4.0,U)*0.85;
+    return (trans+dv)*exp(-a/260.0)*smoothstep(0.6,4.0,U)*0.85*uWake.y;
   }
 
 // pressure field of the hull: bow hump, shoulder trough along the sides, stern rise
@@ -222,7 +235,7 @@ float hullWave(vec2 p){
   float stern=exp(-pow((al+uShipDim.x*0.66)/3.2,2.0))*exp(-pow(lat/2.6,2.0))*0.4;
   return (bow+spread+trough+stern)*sp*sp;
 }
-float shipWaves(vec2 p){ if(distance(p,uShip.xy)>320.0) return 0.0; return kelvin(p)*smoothstep(3.2,5.5,abs(uShip.w))+hullWave(p); }
+float shipWaves(vec2 p){ if(distance(p,uShip.xy)>500.0) return 0.0; return kelvin(p)*smoothstep(3.2,5.5,abs(uShip.w))+hullWave(p); }
 float fogF(float dist){ float x=uFogDensity*dist; return 1.0-exp(-x*x); }
 ${glslWaves()}
 `;
@@ -297,7 +310,7 @@ const waterMat = new THREE.ShaderMaterial({
     gl_Position=projectionMatrix*viewMatrix*wp;
   }`,
   fragmentShader: COMMON + `
-  uniform vec4 uRipples[24];
+  uniform vec4 uRipples[24]; uniform float uChurn;
   uniform sampler2D tSlope; uniform sampler2D tRefl; uniform float uReflOn; uniform vec2 uRes; uniform vec2 uFlow;
   varying vec3 vW; varying vec2 vP; varying float vH; varying float vJ;
   vec3 TM(vec3 c){ return ACESFilmicToneMapping(c); }
@@ -315,12 +328,12 @@ const waterMat = new THREE.ShaderMaterial({
     for(int i=0;i<24;i++){
       vec4 r=uRipples[i];
       float age=uTime-r.z;
-      if(age<0.0||age>7.0||r.w<=0.0) continue;
+      if(age<0.0||age>13.0||r.w<=0.0) continue;
       vec2 dv=p-r.xy; float d=length(dv)+1e-4;
       float spd=1.2+r.w*1.1; float front=age*spd; float x=d-front;
       if(abs(x)>8.0+age*2.0) continue;
       float wd=0.8+age*0.9;
-      float env=exp(-x*x/(wd*wd))*r.w*exp(-age*0.55)/(1.0+front*0.12);
+      float env=exp(-x*x/(wd*wd))*r.w*exp(-age*0.3)/(1.0+front*0.1);
       float kk=3.2/(1.0+age*0.25);
       g+=dv/d*cos(x*kk)*kk*env*0.35;
       foam+=smoothstep(0.45,0.95,env)*0.14*step(0.3,sin(x*kk));
@@ -339,6 +352,37 @@ const waterMat = new THREE.ShaderMaterial({
     s+=((texture2D(tSlope,(r1*p)/1.05+t*vec2(0.05,0.04)).rg*2.0-1.0)*r1)*0.35*(1.0-smoothstep(4.0,40.0,dist));
     return s;
   }
+  ${WHIRLS.length ? `// foam in a whirlpool is pulled out into long thin filaments along the water's spiral path. Sampled in spiral
+  // coordinates (around: angle + log radius, inward: log radius); the texture repeats a whole number of times
+  // round the circle, and a second copy with its seam on the far side hides the seam of the angle.
+  float whirlStreak(vec2 r, float lu, float sp, float t){
+    float a=atan(r.y,r.x), b=atan(-r.y,-r.x), inw=lu*0.55+t*0.03;
+    float pa=(a*sp+2.4*lu)/6.2831853-t, pb=(b*sp+2.4*lu)/6.2831853-t;
+    float fa=texture2D(tFoam,vec2(pa*4.0,inw)).r*0.55+texture2D(tFoam,vec2(pa*8.0+0.37,inw*2.1+0.2)).r*0.45;
+    float fb=texture2D(tFoam,vec2(pb*4.0,inw)).r*0.55+texture2D(tFoam,vec2(pb*8.0+0.37,inw*2.1+0.2)).r*0.45;
+    return mix(fb,fa,smoothstep(2.6,2.0,abs(a)));
+  }
+  float whirlFx(vec2 p, inout vec2 g, out float core, out float aer){ float foam=0.0; core=0.0; aer=0.0;
+    for(int i=0;i<${WHIRLS.length};i++){ vec4 w=uWhirl[i]; float st=abs(w.w); vec2 r=p-w.xy; float d=length(r)+1e-3, u=d/w.z; if(st<0.02||u>3.8) continue;
+      float sp=sign(w.w), lu=log(u+0.06);
+      float fil=whirlStreak(r,lu,sp,uTime*(0.035+0.05*st));
+      float tw=sp*uTime*(0.35+0.6*st)/(0.35+u);   // the inner water turns faster
+      float cs=cos(tw), sn=sin(tw); vec2 rp=vec2(cs*r.x+sn*r.y,-sn*r.x+cs*r.y);
+      float ring=exp(-pow((u-0.55)/0.5,2.0));     // most of the white water sits between the throat and the rim
+      float amt=st*(ring*0.85+exp(-u*u*0.35)*0.35)*(0.7+0.6*texture2D(tNoise,rp*0.008).r);   // in uneven patches
+      foam+=smoothstep(1.0-amt,1.0-amt+0.3,fil*0.72+texture2D(tFoam,rp*0.045).r*0.28)*min(1.0,amt*1.5);
+      foam+=st*exp(-pow((u-0.16)/0.07,2.0))*0.9;  // a collar of froth round the throat
+      core+=st*exp(-u*u*60.0);
+      aer+=st*exp(-u*u*0.5)*0.7;
+      float q=d*d/(w.z*w.z*0.64), k=st*uWhirlDepth[i]*(0.6*exp(-q)+3.2*exp(-q*8.0));
+      g+=r*(2.0*k/(w.z*w.z*0.64))+vec2(-r.y,r.x)/d*(fil-0.5)*0.4*st*ring; }
+    // the tide rip: a band of broken white water along the line where the fast stream shears past the slack, under the bridge
+    float bx=p.x-${glNum(BRIDGE_X)};
+    float rip=exp(-bx*bx/(460.0*460.0))*exp(-pow((p.y-35.0*sin(bx*0.011))/75.0,2.0));
+    float rn=texture2D(tNoise,(p-uFlow)*0.011).r*0.6+texture2D(tFoam,(p-uFlow)*0.05).r*0.4;
+    foam+=rip*smoothstep(0.5,0.8,rn)*0.6; aer+=rip*0.3;
+    g+=rip*0.12*vec2(cos(p.x*1.1+uTime*3.1),sin(p.y*1.3-uTime*2.7));
+    return foam; }` : ''}
   void main(){
     vec3 toC=cameraPosition-vW; float dist=length(toC); vec3 V=toC/dist;
     float fade=1.0-smoothstep(700.0,1400.0,length(vP-cameraPosition.xz));
@@ -349,7 +393,8 @@ const waterMat = new THREE.ShaderMaterial({
     float swirl=texture2D(tNoise,vP*0.0016+vec2(-uTime*0.002,uTime*0.0011)).g;
     float foam=0.0;
     vec2 g=ripples(vP,foam);
-    if(length(vP-uShip.xy)<320.0){
+    float wcore=0.0, waer=0.0, wfoam=0.0; ${WHIRLS.length?'wfoam=whirlFx(vP,g,wcore,waer);':''}
+    if(length(vP-uShip.xy)<500.0){
       float h0=shipWaves(vP);
       g+=vec2(shipWaves(vP+vec2(0.5,0.0))-h0,shipWaves(vP+vec2(0.0,0.5))-h0)/0.5*1.3;
     }
@@ -390,8 +435,8 @@ const waterMat = new THREE.ShaderMaterial({
     float shade=(1.0-smoothstep(0.7,1.15,es))*(1.0-uNight)*0.6;
     float ao=(1.0-smoothstep(0.98,1.45,e))*0.45;
     // water body: absorption + forward scattering through the crests
-    vec3 deep=vec3(0.003,0.024,0.040);
-    vec3 scat=vec3(0.022,0.135,0.190);
+    vec3 deep=vec3(${(STAGE.water?STAGE.water.deep:[0.003,0.024,0.040]).map(glNum).join(',')});
+    vec3 scat=vec3(${(STAGE.water?STAGE.water.scat:[0.022,0.135,0.190]).map(glNum).join(',')});
     float sunUp=clamp(uSunDir.y*3.0,0.0,1.0);
     float crestH=clamp(vH*0.5+0.5,0.0,1.0);
     vec3 body=deep*uAmbient*1.6+scat*(0.30+0.70*crestH)*(uAmbient*0.55+uSunColor*0.30*sunUp);
@@ -399,6 +444,7 @@ const waterMat = new THREE.ShaderMaterial({
     float sss=pow(max(dot(vh,sh),0.0),5.0)*pow(crestH,2.0)*(1.0-abs(V.y))*sunUp;
     body+=vec3(0.03,0.30,0.26)*uSunColor*sss*0.35;
     body*=0.86+0.28*swirl;
+    body=mix(body,vec3(0.05,0.33,0.36)*(uAmbient*0.6+uSunColor*0.25),min(waer,1.0)*0.55)*(1.0-0.6*min(wcore,1.0));   // whirlpools: churned pale water, a small dark hole at the throat
     body*=0.9+0.2*clamp(dot(N,normalize(uSunDir+vec3(0.0,0.6,0.0))),0.0,1.0);
     float ld=landD(vP);
     body=mix(body,body*vec3(1.15,1.35,1.1)+vec3(0.0,0.012,0.006),smoothstep(-60.0,-5.0,ld)*0.6);
@@ -417,13 +463,13 @@ const waterMat = new THREE.ShaderMaterial({
     float crest=smoothstep(0.78,0.34,vJ-nz*0.3)*smoothstep(0.3,1.15,uAmp)*fade*smoothstep(0.15,0.5,nz+0.25);
     float shore=smoothstep(-32.0,-0.8,ld)*(0.5+0.5*smoothstep(0.15,0.75,nz+0.45*sin(ld*0.55+uTime*1.1)))*(0.6+0.5*uAmp);
     float n2=texture2D(tNoise,vP*0.19+vec2(uTime*0.09,uTime*0.05)).g;
-    float hullF=smoothstep(0.98,1.03,e)*smoothstep(1.14+1.0*sp+0.5*slapF,1.0,e)*(0.55+0.9*sp*smoothstep(-0.45*uShipDim.x,0.25*uShipDim.x,alg)+1.4*slapF);
+    float hullF=smoothstep(0.98,1.03,e)*smoothstep(1.14+1.0*sp+0.5*slapF+1.5*uChurn,1.0,e)*(0.55+0.9*sp*smoothstep(-0.45*uShipDim.x,0.25*uShipDim.x,alg)+1.4*slapF+0.85*uChurn);
     float behind=-alg-uShipDim.x*0.5;
-    hullF+=smoothstep(-1.0,1.5,behind)*(1.0-smoothstep(0.0,10.0+40.0*sp,behind))*smoothstep(uShipDim.y*0.45+behind*0.05,uShipDim.y*0.1,abs(lat))*clamp(abs(uShip.w)/2.5,0.0,1.0)*1.3;
+    hullF+=smoothstep(-1.0,1.5,behind)*(1.0-smoothstep(0.0,18.0+75.0*sp,behind))*smoothstep(uShipDim.y*0.45+behind*0.05,uShipDim.y*0.1,abs(lat))*clamp(abs(uShip.w)/2.5,0.0,1.0)*1.3;
     float n3=texture2D(tNoise,vP*0.55-vec2(uTime*0.13,uTime*0.07)).r;
-    hullF*=smoothstep(0.42,0.78,n2*0.6+n3*0.4+sp*0.18);
+    hullF*=smoothstep(0.42,0.78,n2*0.6+n3*0.4+sp*0.18+uChurn*0.2);
     float trailF=smoothstep(0.28,0.85,foamTrail(vP)*uAmp)*smoothstep(0.15,0.65,nz+0.3)*fade;
-    float fAmt=clamp(foam*0.8+crest*0.95+shore*1.0+hullF+trailF*0.9+smoothstep(0.6,0.82,nz)*0.18*uAmp*fade,0.0,1.25);
+    float fAmt=clamp(wfoam+foam*0.8+crest*0.95+shore*1.0+hullF+trailF*0.9+smoothstep(0.6,0.82,nz)*0.18*uAmp*fade,0.0,1.25);
     float lace=texture2D(tFoam,vPf*0.085).r*0.6+texture2D(tFoam,vPf*0.21+vec2(0.37,0.11)).r*0.4;
     float bub=texture2D(tFoam,vPf*0.47+vec2(uTime*0.01,0.0)).g;
     float foamV=smoothstep(1.0-fAmt,1.0-fAmt+0.2,lace)*min(1.0,fAmt*1.7)+bub*min(fAmt,1.0)*0.35;
